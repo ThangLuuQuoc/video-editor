@@ -1,0 +1,88 @@
+{
+  "port": 8787,
+  "dataDir": "data",
+  "skillDirs": ["skills", "skills/user"],
+  "ffmpegPath": "ffmpeg",
+
+  "providers": {
+    "mock": { "type": "mock" },
+    "anthropic": { "type": "anthropic", "apiKey": "${ANTHROPIC_API_KEY}" },
+    "openai": { "type": "openai", "baseUrl": "https://api.openai.com/v1", "apiKey": "${OPENAI_API_KEY}" },
+    "openrouter": { "type": "openai", "baseUrl": "https://openrouter.ai/api/v1", "apiKey": "${OPENROUTER_API_KEY}" },
+    "gemini": { "type": "openai", "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai", "apiKey": "${GEMINI_API_KEY}" },
+    "ollama": { "type": "openai", "baseUrl": "http://localhost:11434/v1", "noKey": true },
+    "meta": { "type": "openai", "baseUrl": "https://api.meta.ai/v1", "apiKey": "${META_API_KEY}" },
+    "fal": { "type": "fal", "apiKey": "${FAL_KEY}" },
+    "replicate": { "type": "replicate", "apiKey": "${REPLICATE_API_TOKEN}" }
+  },
+
+  "models": {
+    "text": [
+      { "id": "rules", "label": "Bộ tách cảnh theo luật (offline)", "provider": "mock", "badge": "Miễn phí", "description": "Không cần AI — đọc định dạng Cảnh/Bối cảnh/Nhân vật/Thoại." },
+      { "id": "claude-sonnet", "label": "Claude Sonnet 5.5", "provider": "anthropic", "model": "claude-sonnet-5-5", "badge": "Đề xuất", "maxTokens": 8000 },
+      { "id": "claude-haiku", "label": "Claude Haiku 5.5", "provider": "anthropic", "model": "claude-haiku-5-5", "badge": "Nhanh", "maxTokens": 8000 },
+      { "id": "meta-muse-spark", "label": "Meta Muse Spark 1.2", "provider": "meta", "model": "muse-spark-1.2-contributor", "badge": "Meta" },
+      { "id": "gpt", "label": "OpenAI GPT", "provider": "openai", "model": "gpt-4.1-mini" },
+      { "id": "openrouter", "label": "OpenRouter (mọi model)", "provider": "openrouter", "model": "anthropic/claude-sonnet-4.5", "description": "Đổi field model để dùng bất kỳ LLM nào trên OpenRouter." },
+      { "id": "gemini-flash", "label": "Gemini Flash", "provider": "gemini", "model": "gemini-2.5-flash" },
+      { "id": "ollama", "label": "Ollama (local)", "provider": "ollama", "model": "qwen2.5:7b", "badge": "Local", "description": "Chạy offline với Ollama." }
+    ],
+    "image": [
+      { "id": "mock-portrait", "label": "Avatar mock (offline)", "provider": "mock", "badge": "Miễn phí" },
+      { "id": "gpt-image", "label": "OpenAI gpt-image-1", "provider": "openai", "model": "gpt-image-1", "maxReferenceImages": 4 },
+      { "id": "fal-flux-schnell", "label": "FLUX.1 schnell (fal)", "provider": "fal", "model": "fal-ai/flux/schnell", "input": { "prompt": "{{prompt}}", "image_size": "square_hd" }, "output": "images[0].url", "cost": "~$0.003/ảnh" },
+      { "id": "fal-nano-banana", "label": "Nano Banana (fal)", "provider": "fal", "model": "fal-ai/nano-banana", "input": { "prompt": "{{prompt}}" }, "output": "images[0].url" },
+      { "id": "replicate-flux", "label": "FLUX schnell (Replicate)", "provider": "replicate", "model": "black-forest-labs/flux-schnell", "input": { "prompt": "{{prompt}}", "aspect_ratio": "{{aspect_ratio}}" }, "output": "output" }
+    ],
+    "video": [
+      {
+        "id": "mock-video", "label": "Mock video (ffmpeg, offline)", "provider": "mock", "badge": "Test miễn phí",
+        "description": "Sinh clip giả lập bằng ffmpeg để thử toàn bộ quy trình không tốn credit.",
+        "minDuration": 2, "maxDuration": 20, "resolutions": ["360p", "480p", "720p", "1080p"], "supportsAudio": true
+      },
+      {
+        "id": "kling-2.1", "label": "Kling 2.1 (fal)", "provider": "fal", "badge": "Ổn định",
+        "model": "fal-ai/kling-video/v2.1/master/text-to-video",
+        "input": { "prompt": "{{prompt}}", "duration": "{{duration|str}}", "aspect_ratio": "{{aspect_ratio}}", "negative_prompt": "{{negative_prompt}}" },
+        "referenceModel": "fal-ai/kling-video/v2.1/standard/image-to-video",
+        "referenceInput": { "prompt": "{{prompt}}", "image_url": "{{image}}", "duration": "{{duration|str}}", "negative_prompt": "{{negative_prompt}}" },
+        "output": "video.url", "durations": [5, 10], "resolutions": ["720p", "1080p"], "aspectRatios": ["16:9", "9:16", "1:1"],
+        "maxReferenceImages": 1, "supportsAudio": false, "cost": "~$0.28–0.9/clip"
+      },
+      {
+        "id": "veo3-fast", "label": "Veo 3 Fast (fal)", "provider": "fal", "badge": "Có âm thanh + lip-sync",
+        "model": "fal-ai/veo3/fast",
+        "input": { "prompt": "{{prompt}}", "aspect_ratio": "{{aspect_ratio}}", "duration": "{{duration}}s", "generate_audio": true, "negative_prompt": "{{negative_prompt}}" },
+        "output": "video.url", "durations": [8], "resolutions": ["720p"], "aspectRatios": ["16:9", "9:16"],
+        "maxReferenceImages": 0, "supportsAudio": true, "cost": "~$3.2/clip 8s"
+      },
+      {
+        "id": "seedance-lite", "label": "Seedance 1 Lite (fal)", "provider": "fal", "badge": "Tham chiếu nhiều nhân vật",
+        "model": "fal-ai/bytedance/seedance/v1/lite/text-to-video",
+        "input": { "prompt": "{{prompt}}", "aspect_ratio": "{{aspect_ratio}}", "resolution": "{{resolution}}", "duration": "{{duration|str}}" },
+        "referenceModel": "fal-ai/bytedance/seedance/v1/lite/reference-to-video",
+        "referenceInput": { "prompt": "{{prompt}}", "reference_image_urls": "{{images}}", "resolution": "{{resolution}}", "duration": "{{duration|str}}" },
+        "output": "video.url", "durations": [5, 10], "resolutions": ["480p", "720p"], "maxReferenceImages": 4, "supportsAudio": false
+      },
+      {
+        "id": "hailuo-02", "label": "MiniMax Hailuo 02 (fal)", "provider": "fal",
+        "model": "fal-ai/minimax/hailuo-02/standard/text-to-video",
+        "input": { "prompt": "{{prompt}}", "duration": "{{duration|str}}" },
+        "referenceModel": "fal-ai/minimax/hailuo-02/standard/image-to-video",
+        "referenceInput": { "prompt": "{{prompt}}", "image_url": "{{image}}", "duration": "{{duration|str}}" },
+        "output": "video.url", "durations": [6, 10], "resolutions": ["720p"], "maxReferenceImages": 1, "supportsAudio": false
+      },
+      {
+        "id": "sora-2", "label": "OpenAI Sora 2", "provider": "openai", "model": "sora-2", "badge": "Có âm thanh",
+        "durations": [4, 8, 12], "resolutions": ["720p"], "aspectRatios": ["16:9", "9:16"], "maxReferenceImages": 1, "supportsAudio": true
+      },
+      {
+        "id": "replicate-video-01", "label": "MiniMax video-01 (Replicate)", "provider": "replicate", "model": "minimax/video-01",
+        "input": { "prompt": "{{prompt}}", "subject_reference": "{{image}}" },
+        "output": "output", "durations": [6], "resolutions": ["720p"], "maxReferenceImages": 1, "supportsAudio": false
+      }
+    ]
+  },
+
+  "defaults": { "text": "claude-sonnet", "image": "fal-flux-schnell", "video": "kling-2.1" }
+}

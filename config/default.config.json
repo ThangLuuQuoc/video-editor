@@ -1,88 +1,762 @@
 {
   "port": 8787,
   "dataDir": "data",
-  "skillDirs": ["skills", "skills/user"],
+  "skillDirs": [
+    "skills",
+    "skills/user"
+  ],
   "ffmpegPath": "ffmpeg",
-
   "providers": {
-    "mock": { "type": "mock" },
-    "anthropic": { "type": "anthropic", "apiKey": "${ANTHROPIC_API_KEY}" },
-    "openai": { "type": "openai", "baseUrl": "https://api.openai.com/v1", "apiKey": "${OPENAI_API_KEY}" },
-    "openrouter": { "type": "openai", "baseUrl": "https://openrouter.ai/api/v1", "apiKey": "${OPENROUTER_API_KEY}" },
-    "gemini": { "type": "openai", "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai", "apiKey": "${GEMINI_API_KEY}" },
-    "ollama": { "type": "openai", "baseUrl": "http://localhost:11434/v1", "noKey": true },
-    "meta": { "type": "openai", "baseUrl": "https://api.meta.ai/v1", "apiKey": "${META_API_KEY}" },
-    "fal": { "type": "fal", "apiKey": "${FAL_KEY}" },
-    "replicate": { "type": "replicate", "apiKey": "${REPLICATE_API_TOKEN}" }
+    "mock": {
+      "type": "mock"
+    },
+    "system": {
+      "type": "system"
+    },
+    "anthropic": {
+      "type": "anthropic",
+      "apiKey": "${ANTHROPIC_API_KEY}"
+    },
+    "openai": {
+      "type": "openai",
+      "baseUrl": "https://api.openai.com/v1",
+      "apiKey": "${OPENAI_API_KEY}"
+    },
+    "openrouter": {
+      "type": "openai",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "apiKey": "${OPENROUTER_API_KEY}"
+    },
+    "gemini": {
+      "type": "openai",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "apiKey": "${GEMINI_API_KEY}"
+    },
+    "ollama": {
+      "type": "openai",
+      "baseUrl": "http://localhost:11434/v1",
+      "noKey": true
+    },
+    "meta": {
+      "type": "openai",
+      "baseUrl": "https://api.meta.ai/v1",
+      "apiKey": "${META_API_KEY}"
+    },
+    "fal": {
+      "type": "fal",
+      "apiKey": "${FAL_KEY}"
+    },
+    "replicate": {
+      "type": "replicate",
+      "apiKey": "${REPLICATE_API_TOKEN}"
+    }
   },
-
   "models": {
     "text": [
-      { "id": "rules", "label": "Bộ tách cảnh theo luật (offline)", "provider": "mock", "badge": "Miễn phí", "description": "Không cần AI — đọc định dạng Cảnh/Bối cảnh/Nhân vật/Thoại." },
-      { "id": "claude-sonnet", "label": "Claude Sonnet 5.5", "provider": "anthropic", "model": "claude-sonnet-5-5", "badge": "Đề xuất", "maxTokens": 8000 },
-      { "id": "claude-haiku", "label": "Claude Haiku 5.5", "provider": "anthropic", "model": "claude-haiku-5-5", "badge": "Nhanh", "maxTokens": 8000 },
-      { "id": "meta-muse-spark", "label": "Meta Muse Spark 1.2", "provider": "meta", "model": "muse-spark-1.2-contributor", "badge": "Meta" },
-      { "id": "gpt", "label": "OpenAI GPT", "provider": "openai", "model": "gpt-4.1-mini" },
-      { "id": "openrouter", "label": "OpenRouter (mọi model)", "provider": "openrouter", "model": "anthropic/claude-sonnet-4.5", "description": "Đổi field model để dùng bất kỳ LLM nào trên OpenRouter." },
-      { "id": "gemini-flash", "label": "Gemini Flash", "provider": "gemini", "model": "gemini-2.5-flash" },
-      { "id": "ollama", "label": "Ollama (local)", "provider": "ollama", "model": "qwen2.5:7b", "badge": "Local", "description": "Chạy offline với Ollama." }
+      {
+        "id": "rules",
+        "label": "Bộ tách cảnh theo luật (offline)",
+        "provider": "mock",
+        "badge": "Miễn phí",
+        "description": "Không cần AI — đọc định dạng Cảnh/Bối cảnh/Nhân vật/Thoại."
+      },
+      {
+        "id": "claude-sonnet",
+        "label": "Claude Sonnet 5.5",
+        "provider": "anthropic",
+        "model": "claude-sonnet-5-5",
+        "badge": "Đề xuất",
+        "maxTokens": 8000
+      },
+      {
+        "id": "claude-haiku",
+        "label": "Claude Haiku 5.5",
+        "provider": "anthropic",
+        "model": "claude-haiku-5-5",
+        "badge": "Nhanh",
+        "maxTokens": 8000
+      },
+      {
+        "id": "meta-muse-spark",
+        "label": "Meta Muse Spark 1.2",
+        "provider": "meta",
+        "model": "muse-spark-1.2-contributor",
+        "badge": "Meta"
+      },
+      {
+        "id": "gpt",
+        "label": "OpenAI GPT",
+        "provider": "openai",
+        "model": "gpt-4.1-mini"
+      },
+      {
+        "id": "openrouter",
+        "label": "OpenRouter (mọi model)",
+        "provider": "openrouter",
+        "model": "anthropic/claude-sonnet-4.5",
+        "description": "Đổi field model để dùng bất kỳ LLM nào trên OpenRouter."
+      },
+      {
+        "id": "gemini-flash",
+        "label": "Gemini Flash",
+        "provider": "gemini",
+        "model": "gemini-2.5-flash"
+      },
+      {
+        "id": "ollama",
+        "label": "Ollama (local)",
+        "provider": "ollama",
+        "model": "qwen2.5:7b",
+        "badge": "Local",
+        "description": "Chạy offline với Ollama."
+      }
     ],
     "image": [
-      { "id": "mock-portrait", "label": "Avatar mock (offline)", "provider": "mock", "badge": "Miễn phí" },
-      { "id": "gpt-image", "label": "OpenAI gpt-image-1", "provider": "openai", "model": "gpt-image-1", "maxReferenceImages": 4 },
-      { "id": "fal-flux-schnell", "label": "FLUX.1 schnell (fal)", "provider": "fal", "model": "fal-ai/flux/schnell", "input": { "prompt": "{{prompt}}", "image_size": "square_hd" }, "output": "images[0].url", "cost": "~$0.003/ảnh" },
-      { "id": "fal-nano-banana", "label": "Nano Banana (fal)", "provider": "fal", "model": "fal-ai/nano-banana", "input": { "prompt": "{{prompt}}" }, "output": "images[0].url" },
-      { "id": "replicate-flux", "label": "FLUX schnell (Replicate)", "provider": "replicate", "model": "black-forest-labs/flux-schnell", "input": { "prompt": "{{prompt}}", "aspect_ratio": "{{aspect_ratio}}" }, "output": "output" }
+      {
+        "id": "mock-portrait",
+        "label": "Avatar mock (offline)",
+        "provider": "mock",
+        "badge": "Miễn phí"
+      },
+      {
+        "id": "gpt-image",
+        "label": "OpenAI gpt-image-1",
+        "provider": "openai",
+        "model": "gpt-image-1",
+        "maxReferenceImages": 4
+      },
+      {
+        "id": "fal-flux-schnell",
+        "label": "FLUX.1 schnell (fal)",
+        "provider": "fal",
+        "model": "fal-ai/flux/schnell",
+        "input": {
+          "prompt": "{{prompt}}",
+          "image_size": "square_hd"
+        },
+        "output": "images[0].url",
+        "cost": "~$0.003/ảnh"
+      },
+      {
+        "id": "fal-nano-banana",
+        "label": "Nano Banana (fal)",
+        "provider": "fal",
+        "model": "fal-ai/nano-banana",
+        "input": {
+          "prompt": "{{prompt}}"
+        },
+        "output": "images[0].url",
+        "referenceModel": "fal-ai/nano-banana/edit",
+        "referenceInput": {
+          "prompt": "{{prompt}}",
+          "image_urls": "{{images}}",
+          "aspect_ratio": "{{aspect_ratio}}"
+        },
+        "maxReferenceImages": 4,
+        "description": "Có chế độ edit nhiều ảnh — dùng tốt để dựng khung hình đầu (keyframe) giữ mặt nhiều nhân vật."
+      },
+      {
+        "id": "replicate-flux",
+        "label": "FLUX schnell (Replicate)",
+        "provider": "replicate",
+        "model": "black-forest-labs/flux-schnell",
+        "input": {
+          "prompt": "{{prompt}}",
+          "aspect_ratio": "{{aspect_ratio}}"
+        },
+        "output": "output"
+      }
     ],
     "video": [
       {
-        "id": "mock-video", "label": "Mock video (ffmpeg, offline)", "provider": "mock", "badge": "Test miễn phí",
-        "description": "Sinh clip giả lập bằng ffmpeg để thử toàn bộ quy trình không tốn credit.",
-        "minDuration": 2, "maxDuration": 20, "resolutions": ["360p", "480p", "720p", "1080p"], "supportsAudio": true
+        "id": "mock-video",
+        "label": "Mock video (ffmpeg, offline)",
+        "provider": "mock",
+        "badge": "Test miễn phí",
+        "description": "Sinh clip giả lập bằng ffmpeg để thử toàn bộ quy trình không tốn credit (không có giọng nói → được lồng tiếng TTS).",
+        "minDuration": 2,
+        "maxDuration": 20,
+        "resolutions": [
+          "360p",
+          "480p",
+          "720p",
+          "1080p"
+        ],
+        "supportsAudio": false
       },
       {
-        "id": "kling-2.1", "label": "Kling 2.1 (fal)", "provider": "fal", "badge": "Ổn định",
+        "id": "kling-2.1",
+        "label": "Kling 2.1 (fal)",
+        "provider": "fal",
+        "badge": "Ổn định",
         "model": "fal-ai/kling-video/v2.1/master/text-to-video",
-        "input": { "prompt": "{{prompt}}", "duration": "{{duration|str}}", "aspect_ratio": "{{aspect_ratio}}", "negative_prompt": "{{negative_prompt}}" },
+        "input": {
+          "prompt": "{{prompt}}",
+          "duration": "{{duration|str}}",
+          "aspect_ratio": "{{aspect_ratio}}",
+          "negative_prompt": "{{negative_prompt}}"
+        },
         "referenceModel": "fal-ai/kling-video/v2.1/standard/image-to-video",
-        "referenceInput": { "prompt": "{{prompt}}", "image_url": "{{image}}", "duration": "{{duration|str}}", "negative_prompt": "{{negative_prompt}}" },
-        "output": "video.url", "durations": [5, 10], "resolutions": ["720p", "1080p"], "aspectRatios": ["16:9", "9:16", "1:1"],
-        "maxReferenceImages": 1, "supportsAudio": false, "cost": "~$0.28–0.9/clip"
+        "referenceInput": {
+          "prompt": "{{prompt}}",
+          "image_url": "{{image}}",
+          "duration": "{{duration|str}}",
+          "negative_prompt": "{{negative_prompt}}"
+        },
+        "output": "video.url",
+        "durations": [
+          5,
+          10
+        ],
+        "resolutions": [
+          "720p",
+          "1080p"
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16",
+          "1:1"
+        ],
+        "maxReferenceImages": 1,
+        "supportsAudio": false,
+        "cost": "~$0.28–0.9/clip",
+        "referenceMode": "first-frame"
       },
       {
-        "id": "veo3-fast", "label": "Veo 3 Fast (fal)", "provider": "fal", "badge": "Có âm thanh + lip-sync",
+        "id": "veo3-fast",
+        "label": "Veo 3 Fast (fal)",
+        "provider": "fal",
+        "badge": "Có âm thanh + lip-sync",
         "model": "fal-ai/veo3/fast",
-        "input": { "prompt": "{{prompt}}", "aspect_ratio": "{{aspect_ratio}}", "duration": "{{duration}}s", "generate_audio": true, "negative_prompt": "{{negative_prompt}}" },
-        "output": "video.url", "durations": [8], "resolutions": ["720p"], "aspectRatios": ["16:9", "9:16"],
-        "maxReferenceImages": 0, "supportsAudio": true, "cost": "~$3.2/clip 8s"
+        "input": {
+          "prompt": "{{prompt}}",
+          "aspect_ratio": "{{aspect_ratio}}",
+          "duration": "{{duration}}s",
+          "generate_audio": true,
+          "negative_prompt": "{{negative_prompt}}"
+        },
+        "output": "video.url",
+        "durations": [
+          8
+        ],
+        "resolutions": [
+          "720p"
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16"
+        ],
+        "maxReferenceImages": 1,
+        "supportsAudio": true,
+        "cost": "~$3.2/clip 8s",
+        "referenceModel": "fal-ai/veo3/fast/image-to-video",
+        "referenceInput": {
+          "prompt": "{{prompt}}",
+          "image_url": "{{image}}",
+          "duration": "{{duration}}s",
+          "generate_audio": true
+        },
+        "referenceMode": "first-frame"
       },
       {
-        "id": "seedance-lite", "label": "Seedance 1 Lite (fal)", "provider": "fal", "badge": "Tham chiếu nhiều nhân vật",
+        "id": "veo31-fast",
+        "label": "Veo 3.1 Fast (fal)",
+        "provider": "fal",
+        "badge": "Âm thanh + nhiều ảnh nhân vật",
+        "description": "Có tiếng nói/lip-sync và nhận tới 3 ảnh tham chiếu nhân vật (reference-to-video) — hợp kịch bản hội thoại nhiều nhân vật.",
+        "model": "fal-ai/veo3.1/fast",
+        "input": {
+          "prompt": "{{prompt}}",
+          "aspect_ratio": "{{aspect_ratio}}",
+          "duration": "{{duration}}s",
+          "resolution": "{{resolution}}",
+          "generate_audio": true,
+          "negative_prompt": "{{negative_prompt}}"
+        },
+        "referenceModel": "fal-ai/veo3.1/fast/reference-to-video",
+        "referenceInput": {
+          "prompt": "{{prompt}}",
+          "image_urls": "{{images}}",
+          "aspect_ratio": "{{aspect_ratio}}",
+          "duration": "{{duration}}s",
+          "resolution": "{{resolution}}",
+          "generate_audio": true
+        },
+        "output": "video.url",
+        "durations": [
+          8
+        ],
+        "resolutions": [
+          "720p",
+          "1080p"
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16"
+        ],
+        "maxReferenceImages": 3,
+        "referenceMode": "subject",
+        "supportsAudio": true
+      },
+      {
+        "id": "seedance-lite",
+        "label": "Seedance 1 Lite (fal)",
+        "provider": "fal",
+        "badge": "Tham chiếu nhiều nhân vật",
         "model": "fal-ai/bytedance/seedance/v1/lite/text-to-video",
-        "input": { "prompt": "{{prompt}}", "aspect_ratio": "{{aspect_ratio}}", "resolution": "{{resolution}}", "duration": "{{duration|str}}" },
+        "input": {
+          "prompt": "{{prompt}}",
+          "aspect_ratio": "{{aspect_ratio}}",
+          "resolution": "{{resolution}}",
+          "duration": "{{duration|str}}"
+        },
         "referenceModel": "fal-ai/bytedance/seedance/v1/lite/reference-to-video",
-        "referenceInput": { "prompt": "{{prompt}}", "reference_image_urls": "{{images}}", "resolution": "{{resolution}}", "duration": "{{duration|str}}" },
-        "output": "video.url", "durations": [5, 10], "resolutions": ["480p", "720p"], "maxReferenceImages": 4, "supportsAudio": false
+        "referenceInput": {
+          "prompt": "{{prompt}}",
+          "reference_image_urls": "{{images}}",
+          "resolution": "{{resolution}}",
+          "duration": "{{duration|str}}"
+        },
+        "output": "video.url",
+        "durations": [
+          5,
+          10
+        ],
+        "resolutions": [
+          "480p",
+          "720p"
+        ],
+        "maxReferenceImages": 4,
+        "supportsAudio": false,
+        "referenceMode": "subject"
       },
       {
-        "id": "hailuo-02", "label": "MiniMax Hailuo 02 (fal)", "provider": "fal",
+        "id": "hailuo-02",
+        "label": "MiniMax Hailuo 02 (fal)",
+        "provider": "fal",
         "model": "fal-ai/minimax/hailuo-02/standard/text-to-video",
-        "input": { "prompt": "{{prompt}}", "duration": "{{duration|str}}" },
+        "input": {
+          "prompt": "{{prompt}}",
+          "duration": "{{duration|str}}"
+        },
         "referenceModel": "fal-ai/minimax/hailuo-02/standard/image-to-video",
-        "referenceInput": { "prompt": "{{prompt}}", "image_url": "{{image}}", "duration": "{{duration|str}}" },
-        "output": "video.url", "durations": [6, 10], "resolutions": ["720p"], "maxReferenceImages": 1, "supportsAudio": false
+        "referenceInput": {
+          "prompt": "{{prompt}}",
+          "image_url": "{{image}}",
+          "duration": "{{duration|str}}"
+        },
+        "output": "video.url",
+        "durations": [
+          6,
+          10
+        ],
+        "resolutions": [
+          "720p"
+        ],
+        "maxReferenceImages": 1,
+        "supportsAudio": false,
+        "referenceMode": "first-frame"
       },
       {
-        "id": "sora-2", "label": "OpenAI Sora 2", "provider": "openai", "model": "sora-2", "badge": "Có âm thanh",
-        "durations": [4, 8, 12], "resolutions": ["720p"], "aspectRatios": ["16:9", "9:16"], "maxReferenceImages": 1, "supportsAudio": true
+        "id": "sora-2",
+        "label": "OpenAI Sora 2",
+        "provider": "openai",
+        "model": "sora-2",
+        "badge": "Có âm thanh",
+        "durations": [
+          4,
+          8,
+          12
+        ],
+        "resolutions": [
+          "720p"
+        ],
+        "aspectRatios": [
+          "16:9",
+          "9:16"
+        ],
+        "maxReferenceImages": 1,
+        "supportsAudio": true,
+        "referenceMode": "first-frame"
       },
       {
-        "id": "replicate-video-01", "label": "MiniMax video-01 (Replicate)", "provider": "replicate", "model": "minimax/video-01",
-        "input": { "prompt": "{{prompt}}", "subject_reference": "{{image}}" },
-        "output": "output", "durations": [6], "resolutions": ["720p"], "maxReferenceImages": 1, "supportsAudio": false
+        "id": "replicate-video-01",
+        "label": "MiniMax video-01 (Replicate)",
+        "provider": "replicate",
+        "model": "minimax/video-01",
+        "input": {
+          "prompt": "{{prompt}}",
+          "subject_reference": "{{image}}"
+        },
+        "output": "output",
+        "durations": [
+          6
+        ],
+        "resolutions": [
+          "720p"
+        ],
+        "maxReferenceImages": 1,
+        "supportsAudio": false,
+        "referenceMode": "subject"
+      }
+    ],
+    "tts": [
+      {
+        "id": "fal-elevenlabs",
+        "label": "ElevenLabs Multilingual v2 (fal)",
+        "provider": "fal",
+        "model": "fal-ai/elevenlabs/tts/multilingual-v2",
+        "badge": "Tự nhiên",
+        "input": {
+          "text": "{{text}}",
+          "voice": "{{voice}}",
+          "speed": "{{speed}}"
+        },
+        "output": "audio.url",
+        "cost": "~$0.1/1000 ký tự",
+        "voices": [
+          {
+            "id": "Aria",
+            "label": "Aria — nữ, trầm ấm",
+            "gender": "female",
+            "age": "adult"
+          },
+          {
+            "id": "Sarah",
+            "label": "Sarah — nữ trẻ",
+            "gender": "female",
+            "age": "young"
+          },
+          {
+            "id": "Laura",
+            "label": "Laura — nữ trẻ",
+            "gender": "female",
+            "age": "young"
+          },
+          {
+            "id": "Charlotte",
+            "label": "Charlotte — nữ",
+            "gender": "female",
+            "age": "adult"
+          },
+          {
+            "id": "Alice",
+            "label": "Alice — nữ (Anh)",
+            "gender": "female",
+            "age": "adult"
+          },
+          {
+            "id": "Matilda",
+            "label": "Matilda — nữ",
+            "gender": "female",
+            "age": "adult"
+          },
+          {
+            "id": "Jessica",
+            "label": "Jessica — nữ trẻ",
+            "gender": "female",
+            "age": "young"
+          },
+          {
+            "id": "Lily",
+            "label": "Lily — nữ trẻ",
+            "gender": "female",
+            "age": "young"
+          },
+          {
+            "id": "Roger",
+            "label": "Roger — nam",
+            "gender": "male",
+            "age": "adult"
+          },
+          {
+            "id": "Charlie",
+            "label": "Charlie — nam trẻ",
+            "gender": "male",
+            "age": "young"
+          },
+          {
+            "id": "George",
+            "label": "George — nam trung niên",
+            "gender": "male",
+            "age": "adult"
+          },
+          {
+            "id": "Callum",
+            "label": "Callum — nam",
+            "gender": "male",
+            "age": "adult"
+          },
+          {
+            "id": "Liam",
+            "label": "Liam — nam trẻ",
+            "gender": "male",
+            "age": "young"
+          },
+          {
+            "id": "Will",
+            "label": "Will — nam trẻ",
+            "gender": "male",
+            "age": "young"
+          },
+          {
+            "id": "Eric",
+            "label": "Eric — nam",
+            "gender": "male",
+            "age": "adult"
+          },
+          {
+            "id": "Chris",
+            "label": "Chris — nam",
+            "gender": "male",
+            "age": "adult"
+          },
+          {
+            "id": "Brian",
+            "label": "Brian — nam trầm",
+            "gender": "male",
+            "age": "adult"
+          },
+          {
+            "id": "Daniel",
+            "label": "Daniel — nam (Anh)",
+            "gender": "male",
+            "age": "adult"
+          },
+          {
+            "id": "Bill",
+            "label": "Bill — nam lớn tuổi",
+            "gender": "male",
+            "age": "elder"
+          },
+          {
+            "id": "River",
+            "label": "River — trung tính"
+          }
+        ]
+      },
+      {
+        "id": "openai-tts",
+        "label": "OpenAI gpt-4o-mini-tts",
+        "provider": "openai",
+        "model": "gpt-4o-mini-tts",
+        "badge": "Điều khiển giọng bằng chỉ dẫn",
+        "description": "Tự thêm chỉ dẫn diễn xuất (tuổi, cảm xúc, nói chậm khi học ngoại ngữ) cho từng nhân vật.",
+        "voices": [
+          {
+            "id": "coral",
+            "label": "Coral — nữ",
+            "gender": "female",
+            "age": "adult"
+          },
+          {
+            "id": "nova",
+            "label": "Nova — nữ trẻ",
+            "gender": "female",
+            "age": "young"
+          },
+          {
+            "id": "shimmer",
+            "label": "Shimmer — nữ",
+            "gender": "female",
+            "age": "adult"
+          },
+          {
+            "id": "sage",
+            "label": "Sage — nữ",
+            "gender": "female",
+            "age": "adult"
+          },
+          {
+            "id": "alloy",
+            "label": "Alloy — trung tính"
+          },
+          {
+            "id": "ash",
+            "label": "Ash — nam",
+            "gender": "male",
+            "age": "adult"
+          },
+          {
+            "id": "echo",
+            "label": "Echo — nam",
+            "gender": "male",
+            "age": "young"
+          },
+          {
+            "id": "verse",
+            "label": "Verse — nam",
+            "gender": "male",
+            "age": "adult"
+          },
+          {
+            "id": "ballad",
+            "label": "Ballad — nam",
+            "gender": "male",
+            "age": "adult"
+          },
+          {
+            "id": "fable",
+            "label": "Fable — nam (Anh)",
+            "gender": "male",
+            "age": "adult"
+          },
+          {
+            "id": "onyx",
+            "label": "Onyx — nam trầm",
+            "gender": "male",
+            "age": "elder"
+          }
+        ]
+      },
+      {
+        "id": "fal-kokoro",
+        "label": "Kokoro (fal, tiếng Anh Mỹ)",
+        "provider": "fal",
+        "model": "fal-ai/kokoro/american-english",
+        "badge": "Rẻ",
+        "input": {
+          "prompt": "{{text}}",
+          "voice": "{{voice}}",
+          "speed": "{{speed}}"
+        },
+        "output": "audio.url",
+        "voices": [
+          {
+            "id": "af_heart",
+            "label": "Heart — nữ",
+            "gender": "female",
+            "age": "adult",
+            "lang": "en-US"
+          },
+          {
+            "id": "af_bella",
+            "label": "Bella — nữ",
+            "gender": "female",
+            "age": "young",
+            "lang": "en-US"
+          },
+          {
+            "id": "af_nicole",
+            "label": "Nicole — nữ",
+            "gender": "female",
+            "age": "adult",
+            "lang": "en-US"
+          },
+          {
+            "id": "af_sky",
+            "label": "Sky — nữ trẻ",
+            "gender": "female",
+            "age": "young",
+            "lang": "en-US"
+          },
+          {
+            "id": "af_sarah",
+            "label": "Sarah — nữ",
+            "gender": "female",
+            "age": "adult",
+            "lang": "en-US"
+          },
+          {
+            "id": "am_adam",
+            "label": "Adam — nam",
+            "gender": "male",
+            "age": "adult",
+            "lang": "en-US"
+          },
+          {
+            "id": "am_michael",
+            "label": "Michael — nam",
+            "gender": "male",
+            "age": "adult",
+            "lang": "en-US"
+          },
+          {
+            "id": "am_fenrir",
+            "label": "Fenrir — nam trầm",
+            "gender": "male",
+            "age": "elder",
+            "lang": "en-US"
+          },
+          {
+            "id": "am_puck",
+            "label": "Puck — nam trẻ",
+            "gender": "male",
+            "age": "young",
+            "lang": "en-US"
+          },
+          {
+            "id": "am_liam",
+            "label": "Liam — nam trẻ",
+            "gender": "male",
+            "age": "young",
+            "lang": "en-US"
+          }
+        ]
+      },
+      {
+        "id": "system-tts",
+        "label": "Giọng hệ điều hành (offline)",
+        "provider": "system",
+        "badge": "Miễn phí",
+        "description": "Windows SAPI / macOS say / Linux espeak-ng. Chất lượng cơ bản, dùng để thử nhịp thoại và phụ đề."
+      },
+      {
+        "id": "mock-tts",
+        "label": "Giọng mock (tiếng bíp, offline)",
+        "provider": "mock",
+        "badge": "Test",
+        "description": "Mỗi câu thoại là một đoạn bíp dài theo số chữ — để thử canh thời gian phụ đề.",
+        "voices": [
+          {
+            "id": "mock-f-elder",
+            "label": "Nữ lớn tuổi",
+            "gender": "female",
+            "age": "elder"
+          },
+          {
+            "id": "mock-f-adult",
+            "label": "Nữ",
+            "gender": "female",
+            "age": "adult"
+          },
+          {
+            "id": "mock-f-child",
+            "label": "Bé gái",
+            "gender": "female",
+            "age": "child"
+          },
+          {
+            "id": "mock-m-elder",
+            "label": "Nam lớn tuổi",
+            "gender": "male",
+            "age": "elder"
+          },
+          {
+            "id": "mock-m-adult",
+            "label": "Nam",
+            "gender": "male",
+            "age": "adult"
+          },
+          {
+            "id": "mock-m-child",
+            "label": "Bé trai",
+            "gender": "male",
+            "age": "child"
+          },
+          {
+            "id": "mock-narrator",
+            "label": "Người dẫn"
+          }
+        ]
       }
     ]
   },
-
-  "defaults": { "text": "claude-sonnet", "image": "fal-flux-schnell", "video": "kling-2.1" }
+  "defaults": {
+    "text": "claude-sonnet",
+    "image": "fal-flux-schnell",
+    "video": "kling-2.1",
+    "tts": "fal-elevenlabs",
+    "keyframe": "fal-nano-banana"
+  }
 }

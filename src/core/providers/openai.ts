@@ -1,6 +1,6 @@
 import type { ModelConfig, ProviderConfig } from '../config';
 import type { GeneratedMedia } from '../media';
-import { httpJson, keyReason, sleep, type ImageRequest, type Provider, type TextRequest, type VideoRequest } from './base';
+import { CanceledError, httpJson, keyReason, sleep, type ImageRequest, type Provider, type SpeechRequest, type TextRequest, type VideoRequest } from './base';
 
 /**
  * OpenAI-compatible provider. Covers OpenAI, OpenRouter, Gemini's OpenAI endpoint, DeepSeek,
@@ -88,11 +88,37 @@ export class OpenAIProvider implements Provider {
     while (!['completed', 'failed'].includes(job.status)) {
       if (Date.now() > deadline) throw new Error('Sora quá thời gian chờ');
       await sleep(5000, req.signal);
-      job = await httpJson(`${this.base}/videos/${job.id}`, { headers: this.headers() });
+      job = await httpJson(`${this.base}/videos/${job.id}`, { headers: this.headers(), signal: req.signal });
     }
     if (job.status === 'failed') throw new Error(job.error?.message || 'Sora render thất bại');
     const content = await fetch(`${this.base}/videos/${job.id}/content`, { headers: this.headers(false) });
     if (!content.ok) throw new Error(`Tải video Sora thất bại (${content.status})`);
     return { data: Buffer.from(await content.arrayBuffer()), mimeType: 'video/mp4' };
+  }
+
+  /** POST /audio/speech (OpenAI TTS; also LocalAI / Kokoro-FastAPI and other compatible servers). */
+  async speech(model: ModelConfig, req: SpeechRequest): Promise<GeneratedMedia> {
+    const name = model.model ?? 'gpt-4o-mini-tts';
+    const body: Record<string, unknown> = { model: name, voice: req.voice || 'alloy', input: req.text, response_format: 'mp3' };
+    const speed = req.speed ?? 1;
+    if (/^gpt-/.test(name)) {
+      // gpt-4o-*-tts is steered by instructions (age, emotion, pace) rather than a speed knob.
+      const pace = speed < 0.95 ? ' Speak slowly and clearly, articulating every word.' : '';
+      if (req.instructions || pace) body.instructions = `${req.instructions ?? ''}${pace}`.trim();
+    } else if (speed !== 1) body.speed = speed;
+    let res: Response;
+    try {
+      res = await fetch(`${this.base}/audio/speech`, {
+        method: 'POST',
+        headers: this.headers(),
+        body: JSON.stringify(body),
+        signal: req.signal ? AbortSignal.any([req.signal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000)
+      });
+    } catch (e) {
+      if (req.signal?.aborted) throw new CanceledError();
+      throw e;
+    }
+    if (!res.ok) throw new Error(`HTTP ${res.status} /audio/speech: ${(await res.text()).slice(0, 300)}`);
+    return { data: Buffer.from(await res.arrayBuffer()), mimeType: 'audio/mpeg' };
   }
 }

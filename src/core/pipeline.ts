@@ -3,12 +3,17 @@ import type { ModelRegistry } from './registry';
 import type { SkillLibrary } from './skills';
 import type { MediaStore } from './media';
 import type { MediaRef } from './providers/base';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { AspectRatio, CharacterItem, CharacterSpec, MediaAsset, ProjectSettings, SceneItem, ScriptMode, VideoResolution } from './types';
 import { CAMERA_ANGLES, newId } from './constants';
 import { extractJson } from './json';
 import { bindCharacters, clampDuration, extractCharactersRules, mentions, parseScriptRules } from './scriptParser';
 import { MOCK_TEXT_ERROR } from './providers/mock';
 import { log } from './log';
+import { runFfmpeg } from './ffmpeg';
+import { throwIfAborted } from './providers/base';
 
 export interface Ctx {
   config: AppConfig;
@@ -180,28 +185,151 @@ export function snapVideoParams(
   return { durationSeconds: d, resolution: res, aspectRatio: ar };
 }
 
+// ---------------------------------------------------------------------------------------------
+// 3a. Character references: direct images, a composite "character sheet", or a keyframe
+// ---------------------------------------------------------------------------------------------
+
+export interface RefLayout {
+  /** Sent as individual reference images. */
+  direct: CharacterItem[];
+  /** Composited side by side into ONE extra image (when the model accepts fewer images than characters). */
+  sheet: CharacterItem[];
+  /** How the prompt refers to each character's reference. */
+  labels: Record<string, string>;
+}
+
+export interface RefPlan extends RefLayout {
+  mode: 'none' | 'direct' | 'sheet' | 'keyframe';
+  chars: CharacterItem[];
+  keyframeModel?: ModelConfig;
+  notes: string[];
+}
+
+const PANEL: Record<number, string[]> = { 2: ['left', 'right'], 3: ['left', 'middle', 'right'] };
+
+export function layoutRefs(chars: CharacterItem[], max: number): RefLayout {
+  const labels: Record<string, string> = {};
+  if (chars.length <= max) {
+    chars.forEach((c, i) => (labels[c.id] = `reference image ${i + 1}`));
+    return { direct: chars, sheet: [], labels };
+  }
+  const direct = chars.slice(0, Math.max(0, max - 1));
+  const sheet = chars.slice(direct.length);
+  direct.forEach((c, i) => (labels[c.id] = `reference image ${i + 1}`));
+  const n = direct.length + 1;
+  sheet.forEach((c, k) => {
+    const pos = PANEL[sheet.length]?.[k] ?? `panel ${k + 1} from the left`;
+    labels[c.id] = `the ${pos} portrait in reference image ${n}`;
+  });
+  return { direct, sheet, labels };
+}
+
+function isMockModel(ctx: Ctx, m: ModelConfig) {
+  return ctx.config.providers[m.provider]?.type === 'mock';
+}
+
+/** Image model used to stage the opening frame for image-to-video models (needs multi-image input). */
+export function keyframeModelFor(ctx: Ctx, settings: Pick<ProjectSettings, 'keyframeModel'>): ModelConfig | undefined {
+  if (settings.keyframeModel === 'off') return undefined;
+  const ids = settings.keyframeModel ? [settings.keyframeModel] : [ctx.config.defaults.keyframe, ...ctx.config.models.image.map(m => m.id)];
+  for (const id of ids) {
+    const m = ctx.registry.find('image', id);
+    if (m && (m.maxReferenceImages ?? 0) > 0 && !isMockModel(ctx, m) && ctx.registry.isAvailable('image', m.id)) return m;
+  }
+  return undefined;
+}
+
+export function planReferences(ctx: Ctx, model: ModelConfig, scene: SceneItem, characters: CharacterItem[], settings: ProjectSettings): RefPlan {
+  const mock = isMockModel(ctx, model);
+  const bound = characters.filter(c => scene.selectedCharacterIds.includes(c.id) && c.image && ctx.media.exists(c.image));
+  const notes: string[] = [];
+  const chars = bound.filter(c => mock || c.image!.mimeType !== 'image/svg+xml');
+  const svg = bound.filter(c => !chars.includes(c));
+  if (svg.length) notes.push(`Ảnh của ${svg.map(c => c.name).join(', ')} là avatar mock (SVG) — không gửi được tới model thật, hãy vẽ lại bằng model ảnh thật hoặc tải ảnh lên`);
+  const none: RefPlan = { mode: 'none', chars, direct: [], sheet: [], labels: {}, notes };
+  if (!chars.length) return none;
+  const max = mock ? Infinity : model.maxReferenceImages ?? 0;
+  if (max <= 0) {
+    notes.push(`${model.label ?? model.id} không nhận ảnh tham chiếu — nhân vật chỉ được mô tả bằng chữ`);
+    return none;
+  }
+  if (!mock && model.referenceMode === 'first-frame') {
+    const km = keyframeModelFor(ctx, settings);
+    if (!km) {
+      notes.push(
+        `${model.label ?? model.id} dùng ảnh làm KHUNG HÌNH ĐẦU, nhưng chưa có model ảnh nhận ảnh tham chiếu (Nano Banana, gpt-image…) để dựng khung hình có nhân vật → nhân vật chỉ được mô tả bằng chữ`
+      );
+      return none;
+    }
+    const labels: Record<string, string> = {};
+    chars.forEach(c => (labels[c.id] = 'as shown in the opening frame'));
+    return { mode: 'keyframe', chars, direct: chars, sheet: [], labels, keyframeModel: km, notes };
+  }
+  const layout = layoutRefs(chars, max);
+  if (layout.sheet.length)
+    notes.push(`Cảnh có ${chars.length} nhân vật nhưng model chỉ nhận ${max} ảnh → ghép ${layout.sheet.map(c => c.name).join(' + ')} thành 1 ảnh tham chiếu`);
+  return { mode: layout.sheet.length ? 'sheet' : 'direct', chars, ...layout, notes };
+}
+
+function toRef(buffer: Buffer, mimeType: string): MediaRef {
+  return { buffer, mimeType, dataUrl: `data:${mimeType};base64,${buffer.toString('base64')}` };
+}
+
+const IMG_EXT: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' };
+
+/** Put several portraits side by side (same cell size, white padding) → one PNG. */
+export async function compositeSheet(ctx: Ctx, chars: CharacterItem[], signal?: AbortSignal): Promise<MediaRef> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aivideo-sheet-'));
+  try {
+    const inputs = chars.map((c, i) => {
+      const f = `in${i}.${IMG_EXT[c.image!.mimeType] ?? 'png'}`;
+      fs.writeFileSync(path.join(dir, f), ctx.media.readBuffer(c.image!));
+      return f;
+    });
+    const cells = inputs.map(
+      (_f, i) => `[${i}:v]scale=512:640:force_original_aspect_ratio=decrease,pad=532:660:(ow-iw)/2:(oh-ih)/2:color=white,setsar=1,format=rgb24[p${i}]`
+    );
+    const filter = `${cells.join(';')};${inputs.map((_f, i) => `[p${i}]`).join('')}hstack=inputs=${inputs.length}[out]`;
+    const r = await runFfmpeg(ctx.config.ffmpegPath, [...inputs.flatMap(f => ['-i', f]), '-filter_complex', filter, '-map', '[out]', '-frames:v', '1', 'sheet.png'], dir, signal);
+    if (r.code !== 0) throw new Error(`Ghép ảnh nhân vật lỗi: ${r.stderr.slice(0, 300)}`);
+    return toRef(fs.readFileSync(path.join(dir, 'sheet.png')), 'image/png');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function buildRefs(ctx: Ctx, layout: RefLayout, signal?: AbortSignal): Promise<MediaRef[]> {
+  const refs = layout.direct.map(c => toRef(ctx.media.readBuffer(c.image!), c.image!.mimeType));
+  if (layout.sheet.length === 1) refs.push(toRef(ctx.media.readBuffer(layout.sheet[0].image!), layout.sheet[0].image!.mimeType));
+  else if (layout.sheet.length > 1) refs.push(await compositeSheet(ctx, layout.sheet, signal));
+  return refs;
+}
+
+// ---------------------------------------------------------------------------------------------
+// 3b. Prompts
+// ---------------------------------------------------------------------------------------------
+
+function characterLine(bound: CharacterItem[], labels: Record<string, string>): string {
+  const anyRef = bound.some(c => labels[c.id]);
+  return `Characters: ${bound
+    .map(c => `${c.name}${c.description ? ` (${c.description})` : ''}${labels[c.id] ? ` — ${labels[c.id]}` : ''}`)
+    .join('; ')}.${anyRef ? ' Keep faces, hairstyles and outfits identical to the references.' : ''}`;
+}
+
 export function buildScenePrompt(
   ctx: Ctx,
   scene: SceneItem,
   characters: CharacterItem[],
-  settings: Pick<ProjectSettings, 'skillIds' | 'scriptMode'>,
-  supportsAudio = true
-): { prompt: string; negativePrompt?: string } {
+  settings: ProjectSettings,
+  model: ModelConfig,
+  plan: RefPlan = planReferences(ctx, model, scene, characters, settings)
+): { prompt: string; negativePrompt?: string; plan: RefPlan } {
+  const supportsAudio = model.supportsAudio !== false;
   const composed = ctx.skills.compose(settings.skillIds);
   const bound = characters.filter(c => scene.selectedCharacterIds.includes(c.id));
-  const withImages = bound.filter(c => c.image);
   const parts: string[] = [scene.promptDescription];
   if (scene.setting && !scene.promptDescription.includes(scene.setting)) parts.push(`Setting: ${scene.setting}.`);
-  if (bound.length) {
-    parts.push(
-      `Characters: ${bound
-        .map(c => {
-          const ref = withImages.indexOf(c);
-          return `${c.name}${c.description ? ` (${c.description})` : ''}${ref >= 0 ? ` — matches reference image ${ref + 1}` : ''}`;
-        })
-        .join('; ')}. Keep faces, hairstyles and outfits identical to the references.`
-    );
-  }
+  if (bound.length) parts.push(characterLine(bound, plan.labels));
   parts.push(`Camera shot: ${scene.cameraAngle}.`);
   if (scene.dialogue.trim()) {
     if (supportsAudio) {
@@ -221,30 +349,70 @@ export function buildScenePrompt(
   }
   if (composed.promptModifier) parts.push(`Visual style: ${composed.promptModifier}.`);
   parts.push('Smooth natural motion, coherent anatomy, cinematic quality.');
-  return { prompt: parts.filter(Boolean).join(' '), negativePrompt: composed.negativePrompt || undefined };
+  return { prompt: parts.filter(Boolean).join(' '), negativePrompt: composed.negativePrompt || undefined, plan };
 }
 
-export function referenceRefs(ctx: Ctx, characters: CharacterItem[], scene: SceneItem, max: number): MediaRef[] {
-  return characters
-    .filter(c => scene.selectedCharacterIds.includes(c.id) && c.image && ctx.media.exists(c.image))
-    .slice(0, max)
-    .map(c => {
-      const buffer = ctx.media.readBuffer(c.image!);
-      return { buffer, mimeType: c.image!.mimeType, dataUrl: `data:${c.image!.mimeType};base64,${buffer.toString('base64')}` };
-    })
-    .filter(r => r.mimeType !== 'image/svg+xml' || max === Infinity);
+/** Prompt for the image model that stages the opening frame (image-to-video models). */
+export function keyframePrompt(ctx: Ctx, scene: SceneItem, bound: CharacterItem[], labels: Record<string, string>, settings: ProjectSettings): string {
+  const composed = ctx.skills.compose(settings.skillIds);
+  return [
+    'Cinematic film still: the opening frame of this shot.',
+    scene.promptDescription,
+    scene.setting && !scene.promptDescription.includes(scene.setting) ? `Setting: ${scene.setting}.` : '',
+    bound.length
+      ? `Characters in frame: ${bound.map(c => `${c.name} (${labels[c.id]})`).join(', ')}. Reproduce each face, hairstyle and outfit exactly from the reference images; every listed character must be visible.`
+      : '',
+    `Camera shot: ${scene.cameraAngle}.`,
+    composed.promptModifier ? `Visual style: ${composed.promptModifier}.` : '',
+    'Natural poses mid-action, coherent anatomy, no text, no captions, no borders, no collage.'
+  ]
+    .filter(Boolean)
+    .join(' ');
 }
+
+// ---------------------------------------------------------------------------------------------
+// 3c. Rendering
+// ---------------------------------------------------------------------------------------------
 
 export async function renderScene(
   ctx: Ctx,
-  args: { scene: SceneItem; characters: CharacterItem[]; settings: ProjectSettings; signal?: AbortSignal }
+  args: { scene: SceneItem; characters: CharacterItem[]; settings: ProjectSettings; signal?: AbortSignal },
+  onProgress: Progress = noop
 ): Promise<{ video: MediaAsset; lastRender: NonNullable<SceneItem['lastRender']> }> {
-  const { scene, settings } = args;
+  const { scene, settings, signal } = args;
   const { model, provider } = ctx.registry.resolve('video', settings.videoModel || undefined);
   const snapped = snapVideoParams(model, scene.durationSeconds, settings.resolution, settings.aspectRatio);
-  const { prompt, negativePrompt } = buildScenePrompt(ctx, scene, args.characters, settings, model.supportsAudio !== false);
-  const isMock = ctx.config.providers[model.provider]?.type === 'mock';
-  const refs = referenceRefs(ctx, args.characters, scene, isMock ? Infinity : model.maxReferenceImages ?? 0);
+  const { prompt, negativePrompt, plan } = buildScenePrompt(ctx, scene, args.characters, settings, model);
+  const notes = [...plan.notes];
+  let refs: MediaRef[] = [];
+  let keyframe: MediaAsset | undefined;
+
+  if (plan.mode === 'keyframe') {
+    const km = plan.keyframeModel!;
+    const kp = ctx.registry.providers.get(km.provider)!;
+    onProgress(`Cảnh ${scene.sceneNumber}: dựng khung hình đầu bằng ${km.label ?? km.id}...`);
+    try {
+      const layout = layoutRefs(plan.chars, km.maxReferenceImages ?? 1);
+      const kfRefs = await buildRefs(ctx, layout, signal);
+      const out = await kp.image!(km, {
+        prompt: keyframePrompt(ctx, scene, plan.chars, layout.labels, settings),
+        negativePrompt,
+        aspectRatio: snapped.aspectRatio,
+        referenceImages: kfRefs,
+        signal
+      });
+      keyframe = await ctx.media.saveGenerated(out, 'image/png', `keyframe${scene.sceneNumber}`);
+      refs = [toRef(ctx.media.readBuffer(keyframe), keyframe.mimeType)];
+    } catch (e) {
+      throwIfAborted(signal);
+      notes.push(`Dựng khung hình đầu thất bại (${(e as Error).message.slice(0, 160)}) → render không có ảnh tham chiếu`);
+    }
+  } else if (plan.mode !== 'none') {
+    refs = await buildRefs(ctx, plan, signal);
+  }
+
+  throwIfAborted(signal);
+  onProgress(`Cảnh ${scene.sceneNumber}: đang render video bằng ${model.label ?? model.id}...`);
   const out = await provider.video!(model, {
     prompt,
     negativePrompt,
@@ -252,8 +420,19 @@ export async function renderScene(
     referenceImages: refs,
     generateAudio: model.supportsAudio,
     label: `Cảnh ${scene.sceneNumber}: ${scene.title}`,
-    signal: args.signal
+    signal
   });
   const video = await ctx.media.saveGenerated(out, 'video/mp4', `scene${scene.sceneNumber}`);
-  return { video, lastRender: { model: model.id, durationSeconds: snapped.durationSeconds, resolution: snapped.resolution, prompt } };
+  return {
+    video,
+    lastRender: {
+      model: model.id,
+      durationSeconds: snapped.durationSeconds,
+      resolution: snapped.resolution,
+      prompt,
+      references: refs.length ? (keyframe ? 'keyframe' : plan.mode) : 'none',
+      keyframe,
+      notes: notes.length ? notes : undefined
+    }
+  };
 }

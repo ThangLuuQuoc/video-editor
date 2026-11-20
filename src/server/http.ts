@@ -4,9 +4,9 @@ import path from 'node:path';
 import type { AppContext } from '../core/director';
 import { APP_ROOT } from '../core/config';
 import { MIME_BY_EXT } from '../core/media';
-import { analyzeScript, autoCast, extractCharacterSpecs, generatePortrait, renderScene, buildScenePrompt } from '../core/pipeline';
-import { mergeScenes } from '../core/merge';
-import { newId } from '../core/constants';
+import { analyzeScript, autoCast, extractCharacterSpecs, generatePortrait, buildScenePrompt } from '../core/pipeline';
+import { previewVoice } from '../core/voice';
+import { DEFAULT_SETTINGS, newId } from '../core/constants';
 import { log } from '../core/log';
 import type { CharacterItem, Project, ProjectSettings, SceneItem } from '../core/types';
 
@@ -28,12 +28,16 @@ export function createHttpServer(ctx: AppContext) {
 
   // --- meta ------------------------------------------------------------------------------
   on('GET', '/api/health', () => ctx.director.health());
-  on('GET', '/api/models', () => ({
-    text: ctx.registry.list('text'),
-    image: ctx.registry.list('image'),
-    video: ctx.registry.list('video'),
-    defaults: ctx.director.defaults()
-  }));
+  on('GET', '/api/models', async () => {
+    await ctx.registry.ready();
+    return {
+      text: ctx.registry.list('text'),
+      image: ctx.registry.list('image'),
+      video: ctx.registry.list('video'),
+      tts: ctx.registry.list('tts'),
+      defaults: ctx.director.defaults()
+    };
+  });
 
   // --- skills ----------------------------------------------------------------------------
   on('GET', '/api/skills', () => ctx.skills.list());
@@ -41,7 +45,7 @@ export function createHttpServer(ctx: AppContext) {
   on('POST', '/api/skills', ({ body }) => ctx.skills.save(body));
   on('DELETE', '/api/skills/:id', ({ params }) => (ctx.skills.delete(params.id), { ok: true }));
 
-  // --- stateless pipeline steps (web UI keeps its own state) ------------------------------
+  // --- stateless helpers (no project state involved) ------------------------------------------
   on('POST', '/api/script/analyze', ({ body }) =>
     analyzeScript(ctx, { script: body.script, mode: body.mode, skillIds: body.skillIds ?? [], textModel: body.textModel || undefined, characters: body.characters })
   );
@@ -71,22 +75,18 @@ export function createHttpServer(ctx: AppContext) {
     )
   );
   on('POST', '/api/scenes/prompt', ({ body }) => {
-    const { model } = ctx.registry.resolve('video', body.settings?.videoModel || undefined);
-    return buildScenePrompt(ctx, body.scene as SceneItem, body.characters ?? [], body.settings as ProjectSettings, model.supportsAudio !== false);
+    const settings = { ...DEFAULT_SETTINGS, ...(body.settings ?? {}) } as ProjectSettings;
+    const { model } = ctx.registry.resolve('video', settings.videoModel || undefined);
+    const r = buildScenePrompt(ctx, body.scene as SceneItem, body.characters ?? [], settings, model);
+    return { prompt: r.prompt, negativePrompt: r.negativePrompt, references: r.plan.mode, notes: r.plan.notes };
   });
-  on('POST', '/api/scenes/render', ({ body }) =>
-    ctx.jobs.start('render', () => renderScene(ctx, { scene: body.scene, characters: body.characters ?? [], settings: body.settings }))
-  );
-  on('POST', '/api/merge', ({ body }) =>
-    ctx.jobs.start('merge', p =>
-      mergeScenes(
-        ctx,
-        { scenes: body.scenes ?? [], resolution: body.settings.resolution, aspectRatio: body.settings.aspectRatio, burnInSubtitles: !!body.settings.burnInSubtitles },
-        p
-      )
-    )
-  );
+  on('POST', '/api/tts/preview', ({ body }) => previewVoice(ctx, { model: body.model, voice: body.voice, text: body.text, instructions: body.instructions }));
+  on('POST', '/api/media/gc', ({ body }) => ctx.director.cleanupMedia(!!body?.dryRun));
+
+  // --- jobs ------------------------------------------------------------------------------
+  on('GET', '/api/jobs', ({ query }) => ctx.jobs.list({ projectId: query.get('projectId') ?? undefined, running: query.get('running') === '1' }));
   on('GET', '/api/jobs/:id', ({ params }) => ctx.jobs.get(params.id) ?? Promise.reject(new HttpError(404, 'Không tìm thấy job')));
+  on('POST', '/api/jobs/:id/cancel', ({ params }) => ctx.jobs.cancel(params.id) ?? Promise.reject(new HttpError(404, 'Không tìm thấy job')));
 
   // --- projects (shared with MCP / ACP) -----------------------------------------------------
   on('GET', '/api/projects', () => ctx.projects.list());
@@ -95,9 +95,29 @@ export function createHttpServer(ctx: AppContext) {
   on('PUT', '/api/projects/:id', ({ params, body }) => {
     const p = body as Project;
     if (p.id !== params.id) throw new HttpError(400, 'id không khớp');
-    return ctx.projects.save(p);
+    return ctx.projects.saveFromClient(p);
   });
   on('DELETE', '/api/projects/:id', ({ params }) => (ctx.projects.delete(params.id), { ok: true }));
+
+  // Long steps run as server jobs on the saved project — closing the tab does not stop them.
+  const projectJob = (kind: string, id: string, fn: (progress: (m: string) => void, signal: AbortSignal) => Promise<unknown>, sceneId?: string) => {
+    ctx.projects.get(id); // 404 early
+    const busy = ctx.jobs.busy(id, sceneId);
+    if (busy && (busy.kind !== 'render' || !sceneId)) throw new HttpError(409, `Dự án đang chạy "${busy.kind}" — hãy chờ hoặc hủy trước`);
+    return ctx.jobs.start(kind, fn, { projectId: id, sceneId });
+  };
+  on('POST', '/api/projects/:id/render', ({ params, body }) =>
+    projectJob('render', params.id, (p, signal) => ctx.director.renderScene(params.id, String(body.sceneId), p, signal), String(body.sceneId))
+  );
+  on('POST', '/api/projects/:id/voice', ({ params, body }) =>
+    projectJob('voice', params.id, (p, signal) => ctx.director.voiceScene(params.id, String(body.sceneId), p, signal), String(body.sceneId))
+  );
+  on('POST', '/api/projects/:id/render-all', ({ params, body }) =>
+    projectJob('render-all', params.id, (p, signal) =>
+      ctx.director.renderAll(params.id, { onlyMissing: !!body?.onlyMissing, thenMerge: !!body?.thenMerge }, p, signal)
+    )
+  );
+  on('POST', '/api/projects/:id/merge', ({ params }) => projectJob('merge', params.id, (p, signal) => ctx.director.merge(params.id, p, signal)));
 
   const distDir = path.join(APP_ROOT, 'dist');
 

@@ -22,10 +22,14 @@ export function summarize(ctx: AppContext, p: Project) {
       characters: p.characters.filter(c => s.selectedCharacterIds.includes(c.id)).map(c => c.name),
       status: s.status,
       error: s.errorMessage,
-      video: abs(s.video)
+      video: abs(s.video),
+      voice: abs(s.voice?.audio),
+      references: s.lastRender?.references,
+      notes: s.lastRender?.notes
     })),
     mergedVideo: abs(p.merged),
     subtitles: abs(p.mergedSubtitles),
+    mergeWarnings: p.mergeWarnings,
     webUrl: `http://localhost:${ctx.config.port}/?project=${p.id}`
   };
 }
@@ -41,7 +45,11 @@ const settingsShape = {
   resolution: z.enum(['360p', '480p', '720p', '1080p']).optional(),
   aspectRatio: z.enum(['16:9', '9:16', '1:1', '4:3', '3:4']).optional(),
   burnInSubtitles: z.boolean().optional(),
-  autoGenerateCharacters: z.boolean().optional()
+  autoGenerateCharacters: z.boolean().optional(),
+  voiceMode: z.enum(['auto', 'always', 'off']).optional().describe('TTS voice-over: auto = only for video models without audio'),
+  ttsModel: z.string().optional().describe('TTS model id from list_models (tts)'),
+  narratorVoice: z.string().optional(),
+  keyframeModel: z.string().optional().describe("Image model staging the first frame for image-to-video models ('' = auto, 'off')")
 };
 
 export function createMcpServer(ctx: AppContext): McpServer {
@@ -60,8 +68,17 @@ export function createMcpServer(ctx: AppContext): McpServer {
 
   server.registerTool(
     'list_models',
-    { title: 'Liệt kê model', description: 'List text/image/video models with availability (missing API keys etc.) and capabilities.' },
-    async () => json({ text: ctx.registry.list('text'), image: ctx.registry.list('image'), video: ctx.registry.list('video'), defaults: d.defaults() })
+    { title: 'Liệt kê model', description: 'List text/image/video/tts models with availability (missing API keys etc.), capabilities and TTS voices.' },
+    async () => {
+      await ctx.registry.ready();
+      return json({
+        text: ctx.registry.list('text'),
+        image: ctx.registry.list('image'),
+        video: ctx.registry.list('video'),
+        tts: ctx.registry.list('tts'),
+        defaults: d.defaults()
+      });
+    }
   );
 
   server.registerTool(
@@ -209,9 +226,56 @@ export function createMcpServer(ctx: AppContext): McpServer {
       inputSchema: { projectId: z.string(), sceneNumber: z.number().int() }
     },
     async ({ projectId, sceneNumber }, extra) => {
-      const sc = await d.renderScene(projectId, sceneNumber, progressOf(extra));
-      return json({ sceneNumber, status: sc.status, error: sc.errorMessage, video: sc.video ? ctx.media.pathOf(sc.video.file) : undefined, render: sc.lastRender });
+      const sc = await d.renderScene(projectId, sceneNumber, progressOf(extra), extra.signal);
+      return json({
+        sceneNumber,
+        status: sc.status,
+        error: sc.errorMessage,
+        video: sc.video ? ctx.media.pathOf(sc.video.file) : undefined,
+        voice: sc.voice ? ctx.media.pathOf(sc.voice.audio.file) : undefined,
+        render: sc.lastRender
+      });
     }
+  );
+
+  server.registerTool(
+    'voice_scene',
+    {
+      title: 'Lồng tiếng một cảnh',
+      description:
+        "Multi-voice TTS for a scene's dialogue (each character gets its own voice, auto-cast by age/gender unless set). Cue times follow the real speech, so merged subtitles match the voice.",
+      inputSchema: { projectId: z.string(), sceneNumber: z.number().int() }
+    },
+    async ({ projectId, sceneNumber }, extra) => {
+      const sc = await d.voiceScene(projectId, sceneNumber, progressOf(extra), extra.signal);
+      return json({ sceneNumber, voice: sc.voice ? ctx.media.pathOf(sc.voice.audio.file) : undefined, durationSeconds: sc.voice?.durationSeconds, cues: sc.voice?.cues });
+    }
+  );
+
+  server.registerTool(
+    'set_character_voice',
+    {
+      title: 'Chọn giọng cho nhân vật',
+      description: 'Pin a TTS voice (id from list_models → tts[].voices) to a character for the project TTS model.',
+      inputSchema: { projectId: z.string(), characterName: z.string(), voiceId: z.string() }
+    },
+    async ({ projectId, characterName, voiceId }) => {
+      const p = d.get(projectId);
+      const c = p.characters.find(x => x.name.toLowerCase() === characterName.toLowerCase());
+      if (!c) return json({ error: `Không có nhân vật "${characterName}"` });
+      c.voice = { model: p.settings.ttsModel || ctx.registry.defaultId('tts'), id: voiceId };
+      return json(summarize(ctx, ctx.projects.save(p)));
+    }
+  );
+
+  server.registerTool(
+    'cleanup_media',
+    {
+      title: 'Dọn file media thừa',
+      description: 'Delete generated files (old renders, previews…) that no project references anymore. dryRun only reports.',
+      inputSchema: { dryRun: z.boolean().default(true) }
+    },
+    async ({ dryRun }) => json({ dryRun, ...d.cleanupMedia(dryRun) })
   );
 
   server.registerTool(
@@ -221,7 +285,7 @@ export function createMcpServer(ctx: AppContext): McpServer {
       description: 'Render every scene sequentially (onlyMissing skips completed ones).',
       inputSchema: { projectId: z.string(), onlyMissing: z.boolean().default(true) }
     },
-    async ({ projectId, onlyMissing }, extra) => json(summarize(ctx, await d.renderAll(projectId, { onlyMissing }, progressOf(extra))))
+    async ({ projectId, onlyMissing }, extra) => json(summarize(ctx, await d.renderAll(projectId, { onlyMissing }, progressOf(extra), extra.signal)))
   );
 
   server.registerTool(
@@ -233,7 +297,7 @@ export function createMcpServer(ctx: AppContext): McpServer {
     },
     async ({ projectId, burnInSubtitles }, extra) => {
       if (burnInSubtitles !== undefined) d.updateSettings(projectId, { burnInSubtitles });
-      return json(summarize(ctx, await d.merge(projectId, progressOf(extra))));
+      return json(summarize(ctx, await d.merge(projectId, progressOf(extra), extra.signal)));
     }
   );
 
@@ -248,7 +312,7 @@ export function createMcpServer(ctx: AppContext): McpServer {
     async ({ script, name, ...settings }, extra) => {
       const clean = Object.fromEntries(Object.entries(settings).filter(([, v]) => v !== undefined));
       const p = d.createProject({ name, script, settings: clean });
-      const r = await d.makeVideo(p.id, progressOf(extra));
+      const r = await d.makeVideo(p.id, progressOf(extra), extra.signal);
       return json({ notes: r.notes, ...summarize(ctx, r.project) });
     }
   );

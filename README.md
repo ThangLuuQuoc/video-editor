@@ -31,10 +31,13 @@ Dòng lệnh: `npm run make -- kichban.txt kling-2.1 anime,vertical-short` → i
 
 ```
 src/core/           lõi dùng chung (không phụ thuộc giao diện)
-  providers/        openai · anthropic · fal · replicate · mcp · mock
-  registry.ts       chọn model, kiểm tra khả dụng (thiếu key…)
-  pipeline.ts       tách cảnh, nhân vật, dựng prompt, render cảnh
-  merge.ts          ghép ffmpeg + phụ đề theo câu thoại
+  providers/        openai · anthropic · fal · replicate · mcp · system (TTS hệ điều hành) · mock
+  registry.ts       chọn model, kiểm tra khả dụng (thiếu key…), giọng TTS
+  pipeline.ts       tách cảnh, nhân vật, ảnh tham chiếu (sheet / keyframe), prompt, render cảnh
+  voicePlan.ts      gán giọng theo nhân vật (thuần, dùng chung với web)
+  voice.ts          lồng tiếng đa giọng cho từng cảnh (TTS + ffmpeg)
+  merge.ts          ghép ffmpeg: mux giọng, giữ khung cuối nếu thoại dài, phụ đề theo câu
+  jobs.ts           job nền có hủy (AbortController)
   skills.ts         Skill Library (file .md)
   director.ts       thao tác theo dự án (dùng cho MCP / ACP / CLI)
 src/server/
@@ -78,22 +81,63 @@ sẽ được ghi đè). `${TEN_BIEN}` lấy từ biến môi trường / `.env`
 
 | Loại provider | Dùng cho | Ghi chú |
 |---|---|---|
-| `openai` | text, image, video (Sora) | Mọi API tương thích OpenAI: OpenAI, OpenRouter, Gemini, DeepSeek, Groq, Ollama, LM Studio, vLLM |
+| `openai` | text, image, video (Sora), tts | Mọi API tương thích OpenAI: OpenAI, OpenRouter, Gemini, DeepSeek, Groq, Ollama, LM Studio, vLLM |
 | `anthropic` | text | Claude (Messages API) |
-| `fal` | image, video | Một adapter cho mọi model trên fal.ai — body lấy từ template `input` |
+| `fal` | image, video, tts | Một adapter cho mọi model trên fal.ai — body lấy từ template `input` |
 | `replicate` | text, image, video | `model` = `owner/name` hoặc `owner/name:version` |
 | `mcp` | text, image, video | Gọi tool của **bất kỳ MCP server nào** làm backend sinh ảnh/video |
-| `mock` | text, image, video | Offline, miễn phí |
+| `system` | tts | Giọng của hệ điều hành (SAPI / say / espeak-ng), tự liệt kê giọng |
+| `mock` | text, image, video, tts | Offline, miễn phí |
 
 **Template `input`**: chuỗi đúng bằng `"{{x}}"` giữ nguyên kiểu (số, mảng…); `"{{x|str}}"` ép chuỗi;
 `"{{duration}}s"` nội suy; khóa có giá trị rỗng bị bỏ. Biến có sẵn: `prompt`, `negative_prompt`,
-`duration`, `resolution`, `aspect_ratio`, `image` (ảnh tham chiếu đầu tiên, data URI), `images`
-(mảng), `generate_audio`. `referenceModel` + `referenceInput` dùng khi cảnh có ảnh nhân vật (ví dụ
-endpoint image-to-video). `output` là đường dẫn tới URL media trong phản hồi (vd `video.url`, `output[0]`).
+`duration`, `resolution`, `aspect_ratio`, `image` (ảnh tham chiếu đầu tiên — URL fal/Replicate sau khi
+upload, hoặc data URI), `images` (mảng), `generate_audio`; model TTS: `text`, `voice`, `speed`. `referenceModel` + `referenceInput` dùng khi cảnh có ảnh nhân vật; khai báo
+`referenceMode: "first-frame"` nếu endpoint đó dùng ảnh làm khung hình đầu (image-to-video). `output` là đường dẫn tới URL media trong phản hồi (vd `video.url`, `output[0]`).
 
 > Các template fal/Replicate/Sora trong cấu hình mặc định viết theo tài liệu công khai của từng nhà
 > cung cấp và **chưa được chạy thử với key thật** trong lần dựng này — schema của nhà cung cấp có thể
 > đổi; nếu lỗi, chỉnh `input`/`output` trong `ai-video.config.json` mà không cần sửa code.
+
+## Lồng tiếng đa giọng (TTS)
+
+Model video không có tiếng (Kling, Seedance, Hailuo, mock…) vẫn có thoại: ở chế độ **Tự động**, sau khi
+render, mỗi câu `Tên: "câu nói"` được đọc bằng giọng riêng của nhân vật đó rồi ghép vào cảnh.
+
+- **Chọn giọng**: tự động theo tuổi / giới tính đoán từ tên + mô tả + prompt chân dung (bà/ông/grandma →
+  lớn tuổi, cháu/bé/boy → trẻ em…), mỗi nhân vật một giọng khác nhau; chọn tay ở cột trái mục
+  *Lồng tiếng* (có nút ▶ nghe thử). Câu không ghi người nói → giọng của nhân vật duy nhất trong cảnh,
+  hoặc giọng *Lời dẫn*.
+- **Model TTS**: ElevenLabs Multilingual v2 (fal, `FAL_KEY`), OpenAI `gpt-4o-mini-tts` (tự thêm chỉ dẫn
+  diễn xuất: tuổi, cảm xúc, nói chậm ở chế độ học thoại), Kokoro (fal, rẻ), **giọng hệ điều hành**
+  (Windows SAPI / macOS `say` / Linux `espeak-ng` — miễn phí, offline) và mock (tiếng bíp để thử nhịp).
+- **Thời gian**: phụ đề `.vtt` và phụ đề in vào video canh theo **thời lượng thật** của từng câu đọc.
+  Thoại dài hơn clip thì khung hình cuối được giữ lại tới khi đọc xong; âm thanh gốc của clip được giảm nhỏ.
+- **Chế độ**: Tự động (chỉ khi model video câm) · Luôn lồng tiếng · Tắt. Sửa thoại/giọng → cảnh báo
+  "giọng đã cũ" và bước ghép tự tạo lại giọng (rẻ hơn nhiều so với render lại video).
+
+## Nhân vật nhất quán khi model nhận ít ảnh
+
+| Model | Cách gửi ảnh nhân vật |
+|---|---|
+| Nhận ảnh làm **tham chiếu nhân vật** (`referenceMode: "subject"`: Veo 3.1 reference-to-video, Seedance, MiniMax subject) | Gửi trực tiếp; nếu cảnh có nhiều nhân vật hơn số ảnh model nhận → **ghép các chân dung thành 1 ảnh** (character sheet, ffmpeg `hstack`) và prompt nói rõ ai ở trái/phải |
+| Dùng ảnh làm **khung hình đầu** (`referenceMode: "first-frame"`: Kling/Hailuo/Veo 3 image-to-video, Sora) | Gửi chân dung thẳng vào sẽ khiến video mở đầu bằng tấm chân dung, nên app **dựng khung hình đầu (keyframe)** bằng model ảnh nhận nhiều ảnh (Nano Banana edit, gpt-image) đặt các nhân vật vào bối cảnh, rồi mới image-to-video. Không có model ảnh phù hợp → render chỉ bằng mô tả chữ và ghi chú lại |
+
+**Veo 3.1 Fast** (`veo31-fast`) là lựa chọn hợp nhất cho hội thoại nhiều nhân vật: vừa có tiếng nói/lip-sync,
+vừa nhận tới 3 ảnh nhân vật. Ảnh tham chiếu được **upload lên fal storage** (hoặc Replicate Files API)
+để gửi URL ngắn thay vì base64 trong JSON.
+
+## Chạy nền, dừng, đồng bộ
+
+- Render 1 cảnh / render hàng loạt / lồng tiếng / ghép đều là **job trên server** chạy trên dự án đã lưu —
+  đóng tab hoặc F5 không làm đứt; mở lại trang sẽ tự bắt lại job đang chạy.
+- Nút **⏹ Dừng** (header, từng cảnh, ghép) hủy job: dừng ffmpeg, hủy request ở fal/Replicate để không
+  bị tính tiền tiếp; cảnh đang render dở trở về trạng thái cũ.
+- Web, MCP và ACP dùng chung file dự án: kết quả render ghi bởi server không bị autosave của web ghi đè
+  (gộp theo `renderRev`/`mergeRev`), thay đổi từ MCP hiện lên web sau vài giây.
+- Nếu ffmpeg thiếu `libass`, app cảnh báo ngay ở ô "In phụ đề vào video" và sau khi ghép (phụ đề vẫn có ở `.vtt`).
+- **Dọn media thừa**: hộp thoại *Dự án* → "Dọn file media thừa" (xem trước số file/dung lượng rồi mới xóa)
+  hoặc MCP `cleanup_media`. File mới hơn 1 giờ luôn được giữ.
 
 ## Skill Library
 
@@ -106,9 +150,11 @@ Có sẵn 12 skill: 6 phong cách (cinematic, anime, realistic-4k, cyberpunk, an
 ## MCP server
 
 Tool: `make_video` (1 bước từ kịch bản → MP4), `create_project`, `update_project`, `analyze_script`,
-`auto_cast`, `add_character`, `update_scene`, `render_scene`, `render_all`, `merge_video`,
-`get_project`, `list_projects`, `list_models`, `list_skills`, `get_skill`, `create_skill`.
-Resource: `skill://<id>`. Bước dài gửi `notifications/progress` nếu client có progressToken.
+`auto_cast`, `add_character`, `update_scene`, `render_scene`, `voice_scene`, `set_character_voice`,
+`render_all`, `merge_video`, `cleanup_media`, `get_project`, `list_projects`, `list_models` (gồm model TTS
+và danh sách giọng), `list_skills`, `get_skill`, `create_skill`.
+Resource: `skill://<id>`. Bước dài gửi `notifications/progress` nếu client có progressToken; client hủy
+request (`notifications/cancelled`) thì render cũng dừng.
 
 Claude Code:
 
@@ -147,7 +193,8 @@ Zed (`settings.json`):
 Trong khung chat: dán kịch bản (hoặc @đính kèm file) → agent tự chạy cả quy trình, hiển thị từng bước
 như tool call. Trước khi render bằng model trả phí, agent xin phép qua `session/request_permission`.
 Lệnh: `/help /new /script /analyze /cast /render [n] /merge /make /status /skills [ids] /models
-/model video <id> /mode <strict|educational|cinematic> /set resolution|aspect|subtitles|autocast`.
+/model <text|image|video|tts> <id> /mode <strict|educational|cinematic> /set resolution|aspect|subtitles|autocast|voice`.
+`session/cancel` dừng cả bước render/ghép đang chạy.
 
 ## Kiểm thử
 

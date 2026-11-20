@@ -145,14 +145,14 @@ export async function runAcpStdio(ctx: AppContext) {
         if (!(await confirmSpend(s, arg ? `Render cảnh ${arg}` : 'Render các cảnh'))) return say(s.id, 'Đã hủy render.\n');
         if (arg) {
           const n = Number(arg);
-          const sc = await step(s, `Render cảnh ${n}`, 'execute', pr => d.renderScene(s.projectId, n, pr));
+          const sc = await step(s, `Render cảnh ${n}`, 'execute', pr => d.renderScene(s.projectId, n, pr, s.abort?.signal));
           return say(s.id, sc.status === 'completed' ? `✅ Cảnh ${n}: ${ctx.media.pathOf(sc.video!.file)}\n` : `❌ Cảnh ${n}: ${sc.errorMessage}\n`);
         }
-        await step(s, 'Render tất cả cảnh', 'execute', pr => d.renderAll(s.projectId, { onlyMissing: true }, pr));
+        await step(s, 'Render tất cả cảnh', 'execute', pr => d.renderAll(s.projectId, { onlyMissing: true }, pr, s.abort?.signal));
         return say(s.id, statusText(s.projectId));
       }
       case 'merge': {
-        const r = await step(s, 'Ghép video hoàn chỉnh', 'execute', pr => d.merge(s.projectId, pr));
+        const r = await step(s, 'Ghép video hoàn chỉnh', 'execute', pr => d.merge(s.projectId, pr, s.abort?.signal));
         return say(s.id, `🎬 ${ctx.media.pathOf(r.merged!.file)}\n`);
       }
       case 'make': {
@@ -162,16 +162,18 @@ export async function runAcpStdio(ctx: AppContext) {
       case 'status':
         return say(s.id, statusText(s.projectId));
       case 'models': {
-        const fmt = (k: 'text' | 'image' | 'video') =>
+        await ctx.registry.ready();
+        const fmt = (k: 'text' | 'image' | 'video' | 'tts') =>
           ctx.registry
             .list(k)
             .map(m => `  ${m.available ? '✅' : '⛔'} ${m.id} — ${m.label}${m.available ? '' : ` (${m.unavailableReason})`}`)
             .join('\n');
-        return say(s.id, `**Text**\n${fmt('text')}\n**Image**\n${fmt('image')}\n**Video**\n${fmt('video')}\n`);
+        return say(s.id, `**Text**\n${fmt('text')}\n**Image**\n${fmt('image')}\n**Video**\n${fmt('video')}\n**TTS (lồng tiếng)**\n${fmt('tts')}\n`);
       }
       case 'model': {
         const [kind, id] = arg.split(/\s+/);
-        if (!['text', 'image', 'video'].includes(kind) || !id) return say(s.id, 'Cú pháp: /model video kling-2.1\n');
+        if (!['text', 'image', 'video', 'tts'].includes(kind) || !id) return say(s.id, 'Cú pháp: /model video kling-2.1 (text | image | video | tts)\n');
+        if (kind === 'tts') await ctx.registry.ready();
         ctx.registry.resolve(kind as any, id); // validates
         d.updateSettings(s.projectId, { [`${kind}Model`]: id } as any);
         return say(s.id, `Đã chọn ${kind} model: ${id}\n`);
@@ -203,9 +205,10 @@ export async function runAcpStdio(ctx: AppContext) {
           resolution: () => ({ resolution: val }),
           aspect: () => ({ aspectRatio: val }),
           subtitles: () => ({ burnInSubtitles: on }),
-          autocast: () => ({ autoGenerateCharacters: on })
+          autocast: () => ({ autoGenerateCharacters: on }),
+          voice: () => ({ voiceMode: ['auto', 'always', 'off'].includes(val) ? val : 'auto' })
         };
-        if (!map[key]) return say(s.id, 'Cú pháp: /set resolution 720p | aspect 9:16 | subtitles on | autocast off\n');
+        if (!map[key]) return say(s.id, 'Cú pháp: /set resolution 720p | aspect 9:16 | subtitles on | autocast off | voice auto|always|off\n');
         d.updateSettings(s.projectId, map[key]() as any);
         return say(s.id, `Đã đặt ${key} = ${val}\n`);
       }
@@ -229,11 +232,11 @@ export async function runAcpStdio(ctx: AppContext) {
     }
     for (const sc of d.get(s.projectId).scenes) {
       if (s.abort?.signal.aborted) throw new Error('cancelled');
-      const r = await step(s, `Render cảnh ${sc.sceneNumber}: ${sc.title}`, 'execute', pr => d.renderScene(s.projectId, sc.sceneNumber, pr));
+      const r = await step(s, `Render cảnh ${sc.sceneNumber}: ${sc.title}`, 'execute', pr => d.renderScene(s.projectId, sc.sceneNumber, pr, s.abort?.signal));
       if (r.status === 'error') say(s.id, `❌ Cảnh ${sc.sceneNumber}: ${r.errorMessage}\n`);
     }
     if (d.get(s.projectId).scenes.some(sc => sc.status === 'completed')) {
-      await step(s, 'Ghép video hoàn chỉnh', 'execute', pr => d.merge(s.projectId, pr));
+      await step(s, 'Ghép video hoàn chỉnh', 'execute', pr => d.merge(s.projectId, pr, s.abort?.signal));
     }
     say(s.id, statusText(s.projectId));
   }

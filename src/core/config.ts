@@ -1,12 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { AspectRatio, ModelKind, VideoResolution } from './types';
+import type { AspectRatio, ModelKind, ReferenceMode, VideoResolution, VoiceInfo } from './types';
 import { log } from './log';
 
 export const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-export type ProviderType = 'openai' | 'anthropic' | 'fal' | 'replicate' | 'mcp' | 'mock';
+export type ProviderType = 'openai' | 'anthropic' | 'fal' | 'replicate' | 'mcp' | 'mock' | 'system';
 
 export interface ProviderConfig {
   type: ProviderType;
@@ -45,7 +45,11 @@ export interface ModelConfig {
   resolutions?: VideoResolution[];
   aspectRatios?: AspectRatio[];
   maxReferenceImages?: number;
+  /** subject (mặc định) = ảnh là tham chiếu nhân vật; first-frame = ảnh làm khung hình đầu. */
+  referenceMode?: ReferenceMode;
   supportsAudio?: boolean;
+  /** TTS: danh sách giọng (provider "system" tự liệt kê giọng của hệ điều hành). */
+  voices?: VoiceInfo[];
   maxTokens?: number;
   temperature?: number;
 }
@@ -57,7 +61,7 @@ export interface AppConfig {
   ffmpegPath: string;
   providers: Record<string, ProviderConfig>;
   models: Record<ModelKind, ModelConfig[]>;
-  defaults: Record<ModelKind, string>;
+  defaults: Record<ModelKind, string> & { keyframe?: string };
 }
 
 function substituteEnv(value: unknown): unknown {
@@ -106,7 +110,8 @@ export function loadConfig(): AppConfig {
     models: {
       text: mergeModels(base.models.text, user.models?.text),
       image: mergeModels(base.models.image, user.models?.image),
-      video: mergeModels(base.models.video, user.models?.video)
+      video: mergeModels(base.models.video, user.models?.video),
+      tts: mergeModels(base.models.tts ?? [], user.models?.tts)
     },
     defaults: { ...base.defaults, ...(user.defaults ?? {}) }
   };

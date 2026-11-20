@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { AlertCircle, Clock, Film, FolderOpen, Info, Layers, Loader2, PanelLeft, PanelLeftClose, X } from 'lucide-react';
+import { AlertCircle, Clock, Film, FolderOpen, Info, Layers, Loader2, PanelLeft, PanelLeftClose, Square, X } from 'lucide-react';
 import { StudioProvider, useStudio } from './studio';
 import { Sidebar } from './components/Sidebar';
 import { MoviePanel } from './components/MoviePanel';
@@ -92,30 +92,36 @@ function Studio() {
           <button onClick={() => setShowIntro(true)} className="p-2 text-slate-400 hover:text-white hover:bg-[#252532] rounded-lg" title="Hướng dẫn">
             <Info size={18} />
           </button>
-          <button
-            onClick={() => s.renderAll({ onlyMissing: true, thenMerge: true })}
-            disabled={s.isBatch || s.isMerging || p.scenes.length === 0}
-            className={`flex items-center gap-2 px-3 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all ${
-              s.isBatch || s.isMerging
-                ? 'bg-amber-500/30 text-amber-200 cursor-not-allowed border border-amber-500/40'
-                : 'bg-gradient-to-r from-amber-500 via-amber-400 to-amber-600 text-black hover:brightness-110 active:scale-95 disabled:opacity-40'
-            }`}
-          >
-            {s.isBatch ? (
-              <>
-                <Loader2 size={16} className="animate-spin" /> Đang quay cảnh {s.batchIndex !== null ? s.batchIndex + 1 : ''}...
-              </>
-            ) : s.isMerging ? (
-              <>
-                <Loader2 size={16} className="animate-spin" /> Đang ghép...
-              </>
-            ) : (
-              <>
-                <Film size={16} /> <span className="hidden lg:inline">🎬 Tạo tất cả & Ghép 1 Video</span>
-                <span className="lg:hidden">Tạo & Ghép</span>
-              </>
-            )}
-          </button>
+          {s.isBatch || s.mergeJob ? (
+            <div className="flex items-center gap-1.5">
+              <span
+                className="flex items-center gap-2 px-3 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-bold bg-amber-500/20 text-amber-200 border border-amber-500/40 max-w-[46vw] sm:max-w-[340px]"
+                title={(s.batchJob ?? s.mergeJob)?.progress}
+              >
+                <Loader2 size={16} className="animate-spin shrink-0" />
+                <span className="truncate">
+                  {s.isMerging ? 'Đang ghép...' : `Đang quay cảnh ${s.batchIndex !== null ? s.batchIndex + 1 : ''}/${p.scenes.length}...`}
+                </span>
+              </span>
+              <button
+                onClick={() => s.cancelJob((s.batchJob ?? s.mergeJob)!.id)}
+                disabled={/hủy/i.test((s.batchJob ?? s.mergeJob)!.progress)}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs sm:text-sm font-bold bg-red-500/15 text-red-300 border border-red-500/50 hover:bg-red-500/25 disabled:opacity-50"
+                title="Dừng tác vụ (hủy cả request đang chạy ở nhà cung cấp nếu hỗ trợ)"
+              >
+                <Square size={13} className="fill-current" /> <span className="hidden sm:inline">Dừng</span>
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => s.renderAll({ onlyMissing: true, thenMerge: true })}
+              disabled={p.scenes.length === 0}
+              className="flex items-center gap-2 px-3 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all bg-gradient-to-r from-amber-500 via-amber-400 to-amber-600 text-black hover:brightness-110 active:scale-95 disabled:opacity-40"
+            >
+              <Film size={16} /> <span className="hidden lg:inline">🎬 Tạo tất cả & Ghép 1 Video</span>
+              <span className="lg:hidden">Tạo & Ghép</span>
+            </button>
+          )}
         </div>
       </header>
 
@@ -133,6 +139,12 @@ function Studio() {
           <button onClick={() => s.setNotice(null)}>
             <X size={14} />
           </button>
+        </div>
+      )}
+      {(s.isBatch || s.mergeJob) && (
+        <div className="shrink-0 px-4 py-1.5 text-[11px] bg-amber-500/5 text-amber-300/90 border-b border-amber-500/20 flex items-center gap-2 truncate">
+          <Loader2 size={12} className="animate-spin shrink-0" /> <span className="truncate">{(s.batchJob ?? s.mergeJob)!.progress}</span>
+          <span className="hidden md:inline text-slate-500 shrink-0">· chạy trên server, có thể đóng tab và mở lại</span>
         </div>
       )}
       {!s.ffmpegOk && (

@@ -1,4 +1,4 @@
-import type { CameraAngle, ProjectSettings, ScriptMode } from './types';
+import type { CameraAngle, ProjectSettings, ScriptMode, VoiceMode } from './types';
 
 export const CAMERA_ANGLES: CameraAngle[] = [
   'Wide Shot (Toàn cảnh)',
@@ -40,8 +40,18 @@ export const DEFAULT_SETTINGS: ProjectSettings = {
   resolution: '720p',
   aspectRatio: '16:9',
   burnInSubtitles: true,
-  autoGenerateCharacters: true
+  autoGenerateCharacters: true,
+  voiceMode: 'auto',
+  ttsModel: '',
+  narratorVoice: '',
+  keyframeModel: ''
 };
+
+export const VOICE_MODES: { id: VoiceMode; label: string; description: string }[] = [
+  { id: 'auto', label: 'Tự động', description: 'Lồng tiếng khi model video không tự tạo âm thanh (Kling, Seedance, Hailuo…).' },
+  { id: 'always', label: 'Luôn lồng tiếng', description: 'Luôn đọc thoại bằng TTS, kể cả khi model video có âm thanh (tiếng gốc bị giảm nhỏ).' },
+  { id: 'off', label: 'Tắt', description: 'Không lồng tiếng — thoại chỉ hiện ở phụ đề.' }
+];
 
 export const SAMPLE_SCRIPT = `Cảnh 1 (5s): Dạo bước phố cổ hoàng hôn
 Bối cảnh: Phố cổ Hà Nội dưới ánh hoàng hôn vàng rực.

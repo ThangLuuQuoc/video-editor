@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react';
-import { BookOpen, CheckCircle2, ChevronDown, ChevronUp, Cpu, FileText, Loader2, Plus, Sparkles, Trash2, UserPlus, Users, Wand2 } from 'lucide-react';
+import { BookOpen, CheckCircle2, ChevronDown, ChevronUp, Cpu, FileText, Loader2, Mic, Play, Plus, Sparkles, Trash2, UserPlus, Users, Wand2 } from 'lucide-react';
 import { useStudio } from '../studio';
-import { SAMPLE_SCRIPT, SCRIPT_MODES } from '../../../src/core/constants';
+import { SAMPLE_SCRIPT, SCRIPT_MODES, VOICE_MODES } from '../../../src/core/constants';
 import type { AspectRatio, ModelInfo, VideoResolution } from '../../../src/core/types';
 import { AddCharacterModal, SkillEditorModal } from './Modals';
 
@@ -28,7 +28,7 @@ const pill = (color: string) => `text-[10px] font-mono px-2 py-0.5 rounded-full 
 export function Sidebar() {
   const s = useStudio();
   const p = s.project!;
-  const [open, setOpen] = useState({ script: true, cast: true, skills: false, models: false });
+  const [open, setOpen] = useState({ script: true, cast: true, voice: false, skills: false, models: false });
   const toggle = (k: keyof typeof open) => setOpen(o => ({ ...o, [k]: !o[k] }));
   const [showAddChar, setShowAddChar] = useState(false);
   const [showSkillEditor, setShowSkillEditor] = useState(false);
@@ -78,12 +78,12 @@ export function Sidebar() {
         </div>
         <button
           onClick={s.analyze}
-          disabled={s.isAnalyzing || !p.script.trim()}
+          disabled={s.isAnalyzing || s.busy || !p.script.trim()}
           className="mt-3 w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-xs font-semibold bg-[#222230] hover:bg-[#2a2a3c] border border-amber-500/30 text-amber-300 disabled:opacity-60"
         >
           {s.isAnalyzing ? (
             <>
-              <Loader2 size={15} className="animate-spin" /> {s.progress || 'Đang phân tích...'}
+              <Loader2 size={15} className="animate-spin" /> Đang phân tích kịch bản...
             </>
           ) : (
             <>
@@ -155,7 +155,7 @@ export function Sidebar() {
         >
           {s.isCasting ? (
             <>
-              <Loader2 size={13} className="animate-spin" /> {s.progress || 'Đang vẽ chân dung...'}
+              <Loader2 size={13} className="animate-spin" /> {s.castProgress || 'Đang vẽ chân dung...'}
             </>
           ) : (
             <>
@@ -165,10 +165,25 @@ export function Sidebar() {
         </button>
       </Section>
 
-      {/* 3. Skill Library */}
+      {/* 3. Voice-over */}
+      <Section
+        icon={<Mic size={15} className="text-rose-400" />}
+        title="3. Lồng tiếng (TTS)"
+        open={open.voice}
+        onToggle={() => toggle('voice')}
+        badge={
+          <span className={pill('text-rose-300 bg-rose-500/10 border-rose-500/20')}>
+            {VOICE_MODES.find(m => m.id === p.settings.voiceMode)?.label} • {s.ttsModel?.label.split(' (')[0] ?? '—'}
+          </span>
+        }
+      >
+        <VoiceSection />
+      </Section>
+
+      {/* 4. Skill Library */}
       <Section
         icon={<BookOpen size={15} className="text-fuchsia-400" />}
-        title="3. Skill Library"
+        title="4. Skill Library"
         open={open.skills}
         onToggle={() => toggle('skills')}
         badge={<span className={pill('text-fuchsia-300 bg-fuchsia-500/10 border-fuchsia-500/20')}>{activeSkills.map(x => x.name.split(' ')[0]).join(' ') || 'không'}</span>}
@@ -215,7 +230,7 @@ export function Sidebar() {
       {/* 4. Models */}
       <Section
         icon={<Cpu size={15} className="text-emerald-400" />}
-        title="4. Mô hình & Xuất hình"
+        title="5. Mô hình & Xuất hình"
         open={open.models}
         onToggle={() => toggle('models')}
         last
@@ -227,6 +242,7 @@ export function Sidebar() {
       >
         <ModelSelect kind="text" label="Model văn bản (tách cảnh, nhân vật)" />
         <ModelSelect kind="image" label="Model ảnh (chân dung nhân vật)" />
+        <KeyframeSelect />
         <div className="text-[11px] text-slate-400 mb-1.5 mt-3">Model video:</div>
         <div className="space-y-1.5 mb-3">
           {s.models!.video.map(m => (
@@ -258,9 +274,137 @@ export function Sidebar() {
   );
 }
 
-function ModelSelect({ kind, label }: { kind: 'text' | 'image'; label: string }) {
+function VoiceSection() {
   const s = useStudio();
-  const list = s.models![kind];
+  const p = s.project!;
+  const voices = s.voices;
+  const [previewing, setPreviewing] = useState('');
+  const preview = async (voice: string, text?: string) => {
+    setPreviewing(voice);
+    await s.previewVoice(voice, text);
+    setPreviewing('');
+  };
+  const sampleOf = (name: string) =>
+    p.scenes
+      .flatMap(sc => sc.dialogue.split('\n'))
+      .find(l => l.toLowerCase().startsWith(name.toLowerCase() + ':'))
+      ?.replace(/^[^:]+:\s*/, '')
+      .replace(/["“”]/g, '');
+  const mode = VOICE_MODES.find(m => m.id === p.settings.voiceMode) ?? VOICE_MODES[0];
+  const selectCls = 'flex-1 min-w-0 bg-[#121219] border border-[#2c2c3e] focus:border-rose-400 text-[11px] text-slate-200 rounded-lg p-1.5 outline-none';
+  const PlayBtn = ({ voice, text }: { voice: string; text?: string }) => (
+    <button
+      onClick={() => preview(voice, text)}
+      disabled={!voice || !!previewing || !s.ttsModel?.available}
+      className="p-1.5 rounded-lg border border-rose-500/30 text-rose-300 hover:bg-rose-500/10 disabled:opacity-40 shrink-0"
+      title="Nghe thử"
+    >
+      {previewing === voice ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} className="fill-current" />}
+    </button>
+  );
+  return (
+    <div className="space-y-3">
+      <div>
+        <div className="grid grid-cols-3 gap-1.5 p-1 bg-[#171722] rounded-xl border border-[#2b2b3b]">
+          {VOICE_MODES.map(m => (
+            <button
+              key={m.id}
+              onClick={() => s.setSettings({ voiceMode: m.id })}
+              title={m.description}
+              className={`py-1.5 px-2 rounded-lg text-[11px] font-semibold truncate ${p.settings.voiceMode === m.id ? 'bg-rose-500 text-black' : 'text-slate-400 hover:text-white'}`}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+        <p className="text-[10px] text-slate-500 mt-1 italic">{mode.description}</p>
+      </div>
+      {p.settings.voiceMode !== 'off' && (
+        <>
+          <ModelSelect kind="tts" label="Model giọng đọc (TTS)" />
+          {!s.ttsModel?.available && <p className="text-[10px] text-red-400 -mt-1">⛔ {s.ttsModel?.unavailableReason}</p>}
+          <div>
+            <div className="text-[11px] text-slate-400 mb-1.5">Giọng theo nhân vật (tự chọn theo tuổi / giới tính nếu để "Tự động"):</div>
+            <div className="space-y-1.5">
+              {p.characters.map(c => {
+                const auto = s.castVoices[c.id];
+                const manual = c.voice?.model === s.ttsModel?.id ? c.voice?.id ?? '' : '';
+                const autoLabel = voices.find(v => v.id === auto)?.label ?? auto;
+                return (
+                  <div key={c.id} className="flex items-center gap-1.5">
+                    {c.image ? (
+                      <img src={c.image.url} className="w-6 h-6 rounded-full object-cover shrink-0 border border-white/10" />
+                    ) : (
+                      <span className="w-6 h-6 rounded-full bg-slate-800 shrink-0" />
+                    )}
+                    <span className="text-[11px] text-slate-200 w-20 truncate shrink-0" title={c.name}>
+                      {c.name}
+                    </span>
+                    <select value={manual} onChange={e => s.setCharacterVoice(c.id, e.target.value)} className={selectCls}>
+                      <option value="">Tự động ({autoLabel || '—'})</option>
+                      {voices.map(v => (
+                        <option key={v.id} value={v.id}>
+                          {v.label}
+                        </option>
+                      ))}
+                    </select>
+                    <PlayBtn voice={manual || auto} text={sampleOf(c.name)} />
+                  </div>
+                );
+              })}
+              <div className="flex items-center gap-1.5">
+                <span className="w-6 h-6 rounded-full bg-[#1d1d29] border border-[#2c2c3e] shrink-0 flex items-center justify-center text-[10px] text-slate-400">🎙</span>
+                <span className="text-[11px] text-slate-400 w-20 truncate shrink-0">Lời dẫn</span>
+                <select value={p.settings.narratorVoice ?? ''} onChange={e => s.setSettings({ narratorVoice: e.target.value })} className={selectCls}>
+                  <option value="">Tự động</option>
+                  {voices.map(v => (
+                    <option key={v.id} value={v.id}>
+                      {v.label}
+                    </option>
+                  ))}
+                </select>
+                <PlayBtn voice={p.settings.narratorVoice || voices[0]?.id || ''} />
+              </div>
+            </div>
+          </div>
+          <p className="text-[10px] text-slate-500">
+            Thoại dạng <code className="text-slate-300">Tên: "câu nói"</code> được đọc bằng giọng của nhân vật đó; phụ đề canh theo thời lượng thật của từng câu. Thoại dài hơn
+            clip thì khung hình cuối được giữ lại cho đọc hết.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+function KeyframeSelect() {
+  const s = useStudio();
+  const p = s.project!;
+  const list = s.models!.image.filter(m => (m.maxReferenceImages ?? 0) > 0 && m.providerType !== 'mock');
+  return (
+    <div className="mb-2.5">
+      <div className="text-[11px] text-slate-400 mb-1">Model dựng khung hình đầu (cho model video image-to-video)</div>
+      <select
+        value={p.settings.keyframeModel ?? ''}
+        onChange={e => s.setSettings({ keyframeModel: e.target.value })}
+        className="w-full bg-[#121219] border border-[#2c2c3e] focus:border-emerald-400 text-xs text-slate-200 rounded-xl p-2 outline-none"
+      >
+        <option value="">Tự động (model ảnh đầu tiên nhận được ảnh tham chiếu)</option>
+        {list.map(m => (
+          <option key={m.id} value={m.id} disabled={!m.available}>
+            {m.available ? '✅' : '⛔'} {m.label}
+            {m.available ? '' : ` — ${m.unavailableReason}`}
+          </option>
+        ))}
+        <option value="off">Tắt — không gửi ảnh nhân vật cho model image-to-video</option>
+      </select>
+    </div>
+  );
+}
+
+function ModelSelect({ kind, label }: { kind: 'text' | 'image' | 'tts'; label: string }) {
+  const s = useStudio();
+  const list = s.models![kind] ?? [];
   const key = `${kind}Model` as const;
   return (
     <div className="mb-2.5">
@@ -311,7 +455,10 @@ function VideoModelCard({ m }: { m: ModelInfo }) {
       <div className="flex flex-wrap gap-x-3 text-[10px] text-slate-500 font-mono mt-1">
         <span>{dur}</span>
         {m.resolutions && <span>{m.resolutions.join(',')}</span>}
-        <span>ref: {m.maxReferenceImages ?? 0}</span>
+        <span>
+          ref: {m.maxReferenceImages ?? 0}
+          {m.referenceMode === 'first-frame' && (m.maxReferenceImages ?? 0) > 0 ? ' (khung đầu)' : ''}
+        </span>
         <span>{m.supportsAudio ? '🔊 audio' : '🔇'}</span>
         {m.cost && <span className="text-amber-400/90">{m.cost}</span>}
         {!m.available && <span className="text-red-400">{m.unavailableReason}</span>}

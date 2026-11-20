@@ -1,49 +1,90 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type ModelsResponse } from './api';
 import { SAMPLE_SCRIPT, newId } from '../../src/core/constants';
-import type { CharacterItem, ModelInfo, Project, ProjectSettings, SceneItem, SkillInfo } from '../../src/core/types';
+import { assignVoices, detectLang, needsVoice, planSceneVoices, voiceSignature } from '../../src/core/voicePlan';
+import type { CharacterItem, JobInfo, ModelInfo, Project, ProjectSettings, SceneItem, SkillInfo, VoiceInfo } from '../../src/core/types';
 
 const LAST_PROJECT_KEY = 'ai-video:last-project';
+const RENDER_FIELDS = ['status', 'errorMessage', 'video', 'lastRender', 'voice', 'renderRev'] as const;
+
+export type VoiceState = 'none' | 'not-needed' | 'missing' | 'stale' | 'ok';
+
+/**
+ * Take what the server owns (render results, merged movie) from `server` into `local`, scene by
+ * scene, when the server's revision counter is newer. Local edits to everything else are kept.
+ */
+function adoptServer(local: Project, server: Project): Project {
+  const byId = new Map(server.scenes.map(s => [s.id, s]));
+  let changed = false;
+  const scenes = local.scenes.map(sc => {
+    const sv = byId.get(sc.id);
+    if (!sv || (sv.renderRev ?? 0) <= (sc.renderRev ?? 0)) return sc;
+    changed = true;
+    const next = { ...sc };
+    for (const k of RENDER_FIELDS) (next as any)[k] = sv[k];
+    return next;
+  });
+  const out: Project = { ...local, scenes, revision: Math.max(local.revision ?? 0, server.revision ?? 0) };
+  if ((server.mergeRev ?? 0) > (local.mergeRev ?? 0)) {
+    changed = true;
+    Object.assign(out, { merged: server.merged, mergedSubtitles: server.mergedSubtitles, mergeWarnings: server.mergeWarnings, mergeRev: server.mergeRev });
+  }
+  return changed || out.revision !== local.revision ? out : local;
+}
 
 function useStudioState() {
   const [project, setProject] = useState<Project | null>(null);
   const [models, setModels] = useState<ModelsResponse | null>(null);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [ffmpegOk, setFfmpegOk] = useState(true);
+  const [subtitlesOk, setSubtitlesOk] = useState(true);
   const [loadError, setLoadError] = useState('');
 
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isCasting, setIsCasting] = useState(false);
-  const [isBatch, setIsBatch] = useState(false);
-  const [batchIndex, setBatchIndex] = useState<number | null>(null);
-  const [isMerging, setIsMerging] = useState(false);
-  const [progress, setProgress] = useState('');
+  const [castProgress, setCastProgress] = useState('');
+  const [jobs, setJobs] = useState<JobInfo[]>([]);
   const [notice, setNotice] = useState<{ kind: 'info' | 'warn' | 'error'; text: string } | null>(null);
 
-  // Always-current project for async flows (fixes the stale-closure bugs of the Flow version).
+  // Always-current project for async flows; `dirty` = local edits not yet saved.
   const projectRef = useRef<Project | null>(null);
+  const dirty = useRef(false);
+  const jobsRef = useRef<JobInfo[]>([]);
+  jobsRef.current = jobs;
 
   const flash = useCallback((kind: 'info' | 'warn' | 'error', text: string) => {
     setNotice({ kind, text });
-    setTimeout(() => setNotice(n => (n?.text === text ? null : n)), kind === 'error' ? 9000 : 5000);
+    setTimeout(() => setNotice(n => (n?.text === text ? null : n)), kind === 'error' ? 9000 : 6000);
   }, []);
 
-  // ---- boot -------------------------------------------------------------------------------
-  const openProject = useCallback(async (id?: string) => {
-    let p: Project | null = null;
-    if (id) p = await api.getProject(id).catch(() => null);
-    if (!p) p = await api.createProject({ name: 'Phố cổ & cơn mưa', script: SAMPLE_SCRIPT });
-    // Scenes left "generating" by a closed tab are not running anymore.
-    p.scenes = p.scenes.map(s => (s.status === 'generating' ? { ...s, status: s.video ? 'completed' : 'idle' } : s));
-    try {
-      localStorage.setItem(LAST_PROJECT_KEY, p.id);
-    } catch {}
-    const url = new URL(location.href);
-    url.searchParams.set('project', p.id);
-    history.replaceState(null, '', url);
+  const setLocal = useCallback((p: Project) => {
     projectRef.current = p;
     setProject(p);
   }, []);
+
+  // ---- boot -------------------------------------------------------------------------------
+  const openProject = useCallback(
+    async (id?: string) => {
+      let p: Project | null = null;
+      if (id) p = await api.getProject(id).catch(() => null);
+      if (!p) p = await api.createProject({ name: 'Phố cổ & cơn mưa', script: SAMPLE_SCRIPT });
+      const running = await api.runningJobs(p.id).catch(() => [] as JobInfo[]);
+      if (!running.length && p.scenes.some(s => s.status === 'generating')) {
+        // Left "generating" by a server that stopped — not running anymore.
+        p.scenes = p.scenes.map(s => (s.status === 'generating' ? { ...s, status: s.video ? 'completed' : 'idle' } : s));
+        dirty.current = true;
+      } else dirty.current = false;
+      try {
+        localStorage.setItem(LAST_PROJECT_KEY, p.id);
+      } catch {}
+      const url = new URL(location.href);
+      url.searchParams.set('project', p.id);
+      history.replaceState(null, '', url);
+      setJobs(running);
+      setLocal(p);
+    },
+    [setLocal]
+  );
 
   const booted = useRef(false);
   useEffect(() => {
@@ -55,6 +96,7 @@ function useStudioState() {
         setModels(m);
         setSkills(s);
         setFfmpegOk(h.ffmpeg.ok);
+        setSubtitlesOk(h.ffmpeg.subtitles);
         let last: string | undefined;
         try {
           last = localStorage.getItem(LAST_PROJECT_KEY) ?? undefined;
@@ -66,25 +108,110 @@ function useStudioState() {
     })();
   }, [openProject]);
 
-  // ---- autosave (debounced) -----------------------------------------------------------------
+  // ---- saving -------------------------------------------------------------------------------
+  const saving = useRef<Promise<void> | null>(null);
+  const saveNow = useCallback(async () => {
+    const sent = projectRef.current;
+    if (!sent || !dirty.current) return;
+    const p = (async () => {
+      try {
+        const saved = await api.saveProject(sent);
+        if (projectRef.current === sent) dirty.current = false;
+        if (projectRef.current) setLocal(adoptServer(projectRef.current, saved));
+      } catch (e) {
+        console.warn('autosave', e);
+      }
+    })();
+    saving.current = p;
+    await p;
+    if (saving.current === p) saving.current = null;
+  }, [setLocal]);
+
   const saveTimer = useRef<ReturnType<typeof setTimeout>>();
   useEffect(() => {
-    if (!project) return;
+    if (!project || !dirty.current) return;
     clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      api.saveProject(project).catch(e => console.warn('autosave', e));
-    }, 800);
-  }, [project]);
+    saveTimer.current = setTimeout(saveNow, 800);
+  }, [project, saveNow]);
 
-  // ---- helpers ------------------------------------------------------------------------------
-  // Apply updates to the ref synchronously so async flows (render → merge) never read stale state.
-  const update = useCallback((fn: (p: Project) => Project) => {
+  /** Flush pending edits before a server job reads the project from disk. */
+  const flushSave = useCallback(async () => {
+    clearTimeout(saveTimer.current);
+    if (saving.current) await saving.current;
+    await saveNow();
+  }, [saveNow]);
+
+  // ---- sync with the server (job progress, results, changes made via MCP) ---------------------
+  const refresh = useCallback(async () => {
     const cur = projectRef.current;
     if (!cur) return;
-    const next = fn(cur);
-    projectRef.current = next;
-    setProject(next);
-  }, []);
+    const server = await api.getProject(cur.id).catch(() => null);
+    const now = projectRef.current;
+    if (!server || !now || now.id !== server.id) return;
+    // Changed elsewhere (MCP / another tab) and nothing local pending → take it whole.
+    if (!dirty.current && !saving.current && (server.revision ?? 0) > (now.revision ?? 0) && !jobsRef.current.length) setLocal(server);
+    else setLocal(adoptServer(now, server));
+  }, [setLocal]);
+
+  /** render-all jobs started with thenMerge (to word the completion message). */
+  const jobMerges = useRef(new Set<string>());
+  const onJobDone = useCallback(
+    (j: JobInfo) => {
+      const label: Record<string, string> = { 'render-all': 'Render hàng loạt', render: 'Render cảnh', voice: 'Lồng tiếng', merge: 'Ghép video' };
+      const what = label[j.kind] ?? j.kind;
+      if (j.status === 'canceled') return flash('warn', `⏹ Đã dừng: ${what}`);
+      if (j.status === 'error') return flash('error', `${what} thất bại: ${j.error}`);
+      const p = j.result as Project | SceneItem | undefined;
+      const merged = j.kind === 'merge' || (j.kind === 'render-all' && jobMerges.current.has(j.id));
+      jobMerges.current.delete(j.id);
+      if (merged) {
+        const warns = (p as Project)?.mergeWarnings ?? [];
+        flash(warns.length ? 'warn' : 'info', warns.length ? `Đã ghép video, lưu ý: ${warns.join(' · ')}` : '✅ Đã ghép hoàn chỉnh video toàn bộ kịch bản!');
+      } else if (j.kind === 'render-all') {
+        const failed = (p as Project)?.scenes?.filter(s => s.status === 'error').length ?? 0;
+        flash(failed ? 'warn' : 'info', failed ? `Render xong, ${failed} cảnh lỗi` : '✅ Đã render xong các cảnh');
+      } else if (j.kind === 'render' && (p as SceneItem)?.status === 'error') {
+        flash('error', `Cảnh ${(p as SceneItem).sceneNumber} lỗi: ${(p as SceneItem).errorMessage}`);
+      }
+    },
+    [flash]
+  );
+
+  useEffect(() => {
+    if (!project?.id) return;
+    let stop = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = async () => {
+      const active = jobsRef.current;
+      if (active.length) {
+        const fresh = await Promise.all(active.map(j => api.job(j.id).catch(() => ({ ...j, status: 'error', error: 'Server mất job (đã khởi động lại?)' }) as JobInfo)));
+        const finished = fresh.filter(j => j.status !== 'running');
+        setJobs(fresh.filter(j => j.status === 'running'));
+        await refresh();
+        finished.forEach(onJobDone);
+      } else {
+        await refresh();
+      }
+      if (!stop) timer = setTimeout(tick, jobsRef.current.length ? 1500 : 4000);
+    };
+    timer = setTimeout(tick, 1000);
+    return () => {
+      stop = true;
+      clearTimeout(timer);
+    };
+  }, [project?.id, refresh, onJobDone]);
+
+  // ---- helpers ------------------------------------------------------------------------------
+  // Apply updates to the ref synchronously so async flows never read stale state.
+  const update = useCallback(
+    (fn: (p: Project) => Project) => {
+      const cur = projectRef.current;
+      if (!cur) return;
+      dirty.current = true;
+      setLocal(fn(cur));
+    },
+    [setLocal]
+  );
   const setSettings = useCallback((patch: Partial<ProjectSettings>) => update(p => ({ ...p, settings: { ...p.settings, ...patch } })), [update]);
   const patchScene = useCallback(
     (id: string, patch: Partial<SceneItem>) => update(p => ({ ...p, scenes: p.scenes.map(s => (s.id === id ? { ...s, ...patch } : s)) })),
@@ -95,7 +222,7 @@ function useStudioState() {
     [update]
   );
 
-  const effective = (kind: 'text' | 'image' | 'video'): string => {
+  const effective = (kind: 'text' | 'image' | 'video' | 'tts'): string => {
     const p = projectRef.current;
     const key = `${kind}Model` as const;
     return p?.settings[key] || (models?.defaults[key] as string) || '';
@@ -106,7 +233,88 @@ function useStudioState() {
     return models?.video.find(m => m.id === id);
   }, [project?.settings.videoModel, models]);
 
-  // ---- actions ------------------------------------------------------------------------------
+  const ttsModel: ModelInfo | undefined = useMemo(() => {
+    const id = project?.settings.ttsModel || models?.defaults.ttsModel;
+    return models?.tts?.find(m => m.id === id);
+  }, [project?.settings.ttsModel, models]);
+  const voices: VoiceInfo[] = ttsModel?.voices ?? [];
+  const lang = useMemo(() => detectLang(project?.scenes.map(s => s.dialogue).join('\n') ?? ''), [project?.scenes]);
+  /** Voice each character gets (manual pick or auto-cast). */
+  const castVoices = useMemo(
+    () => (project && ttsModel ? assignVoices(project.characters, voices, ttsModel.id, lang) : {}),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [project?.characters, ttsModel, lang]
+  );
+
+  const voiceState = (sc: SceneItem): VoiceState => {
+    const p = projectRef.current;
+    if (!p || !sc.dialogue.trim()) return 'none';
+    const vid = sc.lastRender?.model || effective('video');
+    const hasAudio = models?.video.find(m => m.id === vid)?.supportsAudio !== false;
+    if (!needsVoice(sc, p.settings, hasAudio)) return 'not-needed';
+    if (!sc.voice) return 'missing';
+    if (!ttsModel) return 'ok';
+    const sig = voiceSignature(ttsModel.id, planSceneVoices(sc, p.characters, p.settings, ttsModel.id, voices, lang));
+    return sig === sc.voice.signature ? 'ok' : 'stale';
+  };
+
+  // ---- server jobs --------------------------------------------------------------------------
+  const startJob = useCallback(
+    async (action: 'render' | 'voice' | 'render-all' | 'merge', body: unknown = {}) => {
+      const p = projectRef.current;
+      if (!p) return;
+      try {
+        await flushSave();
+        const job = await api.startProjectJob(p.id, action, body);
+        setJobs(js => [...js, job]);
+        await refresh();
+        return job;
+      } catch (e) {
+        flash('error', (e as Error).message);
+      }
+    },
+    [flushSave, refresh, flash]
+  );
+
+  const cancelJob = useCallback(
+    async (id?: string) => {
+      const ids = id ? [id] : jobsRef.current.map(j => j.id);
+      await Promise.all(ids.map(x => api.cancelJob(x).catch(() => {})));
+      setJobs(js => js.map(j => (ids.includes(j.id) ? { ...j, progress: 'Đang hủy...' } : j)));
+    },
+    []
+  );
+
+  const renderScene = useCallback((sceneId: string) => startJob('render', { sceneId }), [startJob]);
+  const voiceScene = useCallback((sceneId: string) => startJob('voice', { sceneId }), [startJob]);
+  const renderAll = useCallback(
+    (opts: { onlyMissing: boolean; thenMerge: boolean }) => {
+      if (jobsRef.current.some(j => j.kind === 'render-all' || j.kind === 'merge')) return;
+      return startJob('render-all', opts).then(job => {
+        if (job && opts.thenMerge) jobMerges.current.add(job.id);
+        return job;
+      });
+    },
+    [startJob]
+  );
+  const merge = useCallback(() => {
+    const p = projectRef.current!;
+    if (!p.scenes.some(s => s.status === 'completed' && s.video)) return flash('warn', 'Chưa có phân cảnh nào hoàn tất để ghép');
+    return startJob('merge');
+  }, [startJob, flash]);
+
+  const batchJob = jobs.find(j => j.kind === 'render-all');
+  const mergeJob = jobs.find(j => j.kind === 'merge');
+  const isBatch = !!batchJob;
+  const isMerging = !!mergeJob || (!!batchJob && /ghép|chuẩn hóa|nối/i.test(batchJob.progress));
+  const generatingIdx = project?.scenes.findIndex(s => s.status === 'generating') ?? -1;
+  // "[3/6] …" from the server job, else the scene currently marked generating.
+  const step = batchJob?.progress.match(/^\[(\d+)\/\d+\]/);
+  const batchIndex = !isBatch ? null : generatingIdx >= 0 ? generatingIdx : step ? Number(step[1]) - 1 : null;
+  const jobForScene = (sceneId: string) => jobs.find(j => j.sceneId === sceneId);
+  const busy = jobs.length > 0;
+
+  // ---- client-side steps (fast, stateless endpoints) ------------------------------------------
   const autoCast = useCallback(
     async (scenes?: SceneItem[]) => {
       const p = projectRef.current!;
@@ -121,7 +329,7 @@ function useStudioState() {
             textModel: effective('text'),
             imageModel: effective('image')
           },
-          setProgress
+          setCastProgress
         );
         update(cur => ({
           ...cur,
@@ -134,7 +342,7 @@ function useStudioState() {
         flash('error', `Tạo nhân vật thất bại: ${(e as Error).message}`);
       } finally {
         setIsCasting(false);
-        setProgress('');
+        setCastProgress('');
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -144,8 +352,8 @@ function useStudioState() {
   const analyze = useCallback(async () => {
     const p = projectRef.current!;
     if (!p.script.trim()) return;
+    if (jobsRef.current.length) return flash('warn', 'Đang có tác vụ render/ghép chạy — hãy chờ hoặc dừng trước khi tách cảnh lại');
     setIsAnalyzing(true);
-    setProgress('Đang đọc kịch bản và phân tích từng phân cảnh...');
     try {
       const r = await api.analyze({
         script: p.script,
@@ -154,72 +362,16 @@ function useStudioState() {
         textModel: effective('text'),
         characters: p.characters
       });
-      update(cur => ({ ...cur, scenes: r.scenes, merged: undefined, mergedSubtitles: undefined }));
+      update(cur => ({ ...cur, scenes: r.scenes, merged: undefined, mergedSubtitles: undefined, mergeWarnings: undefined }));
       flash(r.warning ? 'warn' : 'info', r.warning ?? `Đã tách ${r.scenes.length} cảnh (engine: ${r.engine})`);
       if (p.settings.autoGenerateCharacters) await autoCast(r.scenes);
     } catch (e) {
       flash('error', `Phân tích thất bại: ${(e as Error).message}`);
     } finally {
       setIsAnalyzing(false);
-      setProgress('');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [update, flash, autoCast, models]);
-
-  const renderScene = useCallback(
-    async (sceneId: string): Promise<boolean> => {
-      const p = projectRef.current!;
-      const scene = p.scenes.find(s => s.id === sceneId);
-      if (!scene) return false;
-      patchScene(sceneId, { status: 'generating', errorMessage: undefined });
-      try {
-        const r = await api.renderScene({ scene, characters: p.characters, settings: { ...p.settings, videoModel: effective('video') } });
-        patchScene(sceneId, { status: 'completed', video: r.video, lastRender: r.lastRender });
-        return true;
-      } catch (e) {
-        patchScene(sceneId, { status: 'error', errorMessage: (e as Error).message });
-        return false;
-      }
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [patchScene, models]
-  );
-
-  const merge = useCallback(async () => {
-    const p = projectRef.current!;
-    if (!p.scenes.some(s => s.status === 'completed' && s.video)) return flash('warn', 'Chưa có phân cảnh nào hoàn tất để ghép');
-    setIsMerging(true);
-    try {
-      const r = await api.merge({ scenes: p.scenes, settings: p.settings }, setProgress);
-      update(cur => ({ ...cur, merged: { ...r.video, durationSeconds: r.durationSeconds }, mergedSubtitles: r.subtitles }));
-      flash('info', '✅ Đã ghép hoàn chỉnh video toàn bộ kịch bản!');
-      return true;
-    } catch (e) {
-      flash('error', `Ghép video thất bại: ${(e as Error).message}`);
-    } finally {
-      setIsMerging(false);
-      setProgress('');
-    }
-  }, [update, flash]);
-
-  const renderAll = useCallback(
-    async (opts: { onlyMissing: boolean; thenMerge: boolean }) => {
-      if (isBatch || isMerging) return;
-      setIsBatch(true);
-      const ids = projectRef.current!.scenes.map(s => s.id);
-      for (let i = 0; i < ids.length; i++) {
-        const sc = projectRef.current!.scenes.find(s => s.id === ids[i]);
-        if (!sc) continue;
-        if (opts.onlyMissing && sc.status === 'completed' && sc.video) continue;
-        setBatchIndex(i);
-        await renderScene(sc.id);
-      }
-      setIsBatch(false);
-      setBatchIndex(null);
-      if (opts.thenMerge) await merge();
-    },
-    [isBatch, isMerging, renderScene, merge]
-  );
 
   const addScene = () =>
     setScenes(sc => [
@@ -244,7 +396,17 @@ function useStudioState() {
   const duplicateScene = (index: number) =>
     setScenes(sc => {
       const t = sc[index];
-      const copy: SceneItem = { ...t, id: newId('sc'), title: `${t.title} (Bản sao)`, status: 'idle', video: undefined, errorMessage: undefined, lastRender: undefined };
+      const copy: SceneItem = {
+        ...t,
+        id: newId('sc'),
+        title: `${t.title} (Bản sao)`,
+        status: 'idle',
+        video: undefined,
+        voice: undefined,
+        errorMessage: undefined,
+        lastRender: undefined,
+        renderRev: undefined
+      };
       return [...sc.slice(0, index + 1), copy, ...sc.slice(index + 1)];
     });
 
@@ -272,6 +434,11 @@ function useStudioState() {
       characters: p.characters.filter(c => c.id !== id),
       scenes: p.scenes.map(s => ({ ...s, selectedCharacterIds: s.selectedCharacterIds.filter(x => x !== id) }))
     }));
+  const setCharacterVoice = (id: string, voiceId: string) =>
+    update(p => ({
+      ...p,
+      characters: p.characters.map(c => (c.id !== id ? c : { ...c, voice: voiceId ? { model: effective('tts'), id: voiceId } : undefined }))
+    }));
   const toggleCharacterInScene = (sceneId: string, charId: string) =>
     update(p => ({
       ...p,
@@ -294,19 +461,41 @@ function useStudioState() {
 
   const reloadSkills = async () => setSkills(await api.skills());
 
+  const previewAudio = useRef<HTMLAudioElement | null>(null);
+  const previewVoice = async (voice: string, text?: string) => {
+    try {
+      const a = await api.ttsPreview({ model: effective('tts'), voice, text });
+      previewAudio.current?.pause();
+      previewAudio.current = new Audio(a.url);
+      await previewAudio.current.play();
+    } catch (e) {
+      flash('error', `Nghe thử giọng lỗi: ${(e as Error).message}`);
+    }
+  };
+
   return {
     project,
     models,
     skills,
     ffmpegOk,
+    subtitlesOk,
     loadError,
     videoModel,
+    ttsModel,
+    voices,
+    castVoices,
+    voiceState,
     isAnalyzing,
     isCasting,
+    castProgress,
+    jobs,
+    busy,
+    batchJob,
+    mergeJob,
     isBatch,
     batchIndex,
     isMerging,
-    progress,
+    jobForScene,
     notice,
     setNotice,
     flash,
@@ -317,17 +506,21 @@ function useStudioState() {
     analyze,
     autoCast,
     renderScene,
+    voiceScene,
     renderAll,
     merge,
+    cancelJob,
     addScene,
     duplicateScene,
     deleteScene,
     moveScene,
     addCharacter,
     removeCharacter,
+    setCharacterVoice,
     toggleCharacterInScene,
     toggleSkill,
     reloadSkills,
+    previewVoice,
     effective
   };
 }

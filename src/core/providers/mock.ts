@@ -4,7 +4,7 @@ import path from 'node:path';
 import type { ModelConfig, ProviderConfig } from '../config';
 import type { GeneratedMedia } from '../media';
 import { runFfmpeg, resolutionToSize } from '../ffmpeg';
-import type { ImageRequest, Provider, TextRequest, VideoRequest } from './base';
+import type { ImageRequest, Provider, SpeechRequest, TextRequest, VideoRequest } from './base';
 
 export const MOCK_TEXT_ERROR = 'MOCK_TEXT_PROVIDER';
 
@@ -30,6 +30,7 @@ function escapeXml(s: string) {
  *  - text  → throws MOCK_TEXT so the pipeline uses the rule-based script parser
  *  - image → SVG avatar
  *  - video → ffmpeg-generated clip (animated test pattern + caption + tone)
+ *  - speech → a "babble" tone whose length follows the text (to test subtitle timing)
  */
 export class MockProvider implements Provider {
   constructor(readonly name: string, readonly config: ProviderConfig & { ffmpegPath?: string }) {}
@@ -62,6 +63,10 @@ export class MockProvider implements Provider {
     return { data: Buffer.from(svg), mimeType: 'image/svg+xml' };
   }
 
+  speech(_m: ModelConfig, req: SpeechRequest): Promise<GeneratedMedia> {
+    return mockSpeech(this.config.ffmpegPath || 'ffmpeg', req);
+  }
+
   async video(_m: ModelConfig, req: VideoRequest): Promise<GeneratedMedia> {
     const ffmpeg = this.config.ffmpegPath || 'ffmpeg';
     const { w, h } = resolutionToSize(req.resolution, req.aspectRatio);
@@ -81,7 +86,7 @@ export class MockProvider implements Provider {
         const args = ['-f', 'lavfi', '-i', a.src, '-f', 'lavfi', '-i', `sine=frequency=${220 + (hue % 220)}:duration=${d}`];
         if (a.vf) args.push('-vf', a.vf);
         args.push('-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest', 'out.mp4');
-        const r = await runFfmpeg(ffmpeg, args, dir);
+        const r = await runFfmpeg(ffmpeg, args, dir, req.signal);
         if (r.code === 0) return { data: fs.readFileSync(path.join(dir, 'out.mp4')), mimeType: 'video/mp4' };
         last = r.stderr;
       }
@@ -89,6 +94,23 @@ export class MockProvider implements Provider {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  }
+}
+
+/** Mock TTS: ~14 characters per second, pitch depends on the voice id. */
+export async function mockSpeech(ffmpeg: string, req: SpeechRequest): Promise<GeneratedMedia> {
+  const d = Math.min(15, Math.max(0.8, req.text.length / 14 / (req.speed ?? 1)));
+  const hue = hashHue(req.voice || 'narrator');
+  const freq = /child/.test(req.voice) ? 520 : /elder/.test(req.voice) ? 190 : 260 + (hue % 160);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aivideo-mocktts-'));
+  try {
+    // A tone pulsing ~4x per second sounds roughly like syllables.
+    const src = `sine=frequency=${freq}:duration=${d.toFixed(2)}:sample_rate=24000`;
+    const r = await runFfmpeg(ffmpeg, ['-f', 'lavfi', '-i', src, '-af', "volume='0.25+0.2*sin(2*PI*4*t)':eval=frame", 'out.wav'], dir, req.signal);
+    if (r.code !== 0) throw new Error(`Mock TTS cần ffmpeg: ${r.stderr.slice(0, 200)}`);
+    return { data: fs.readFileSync(path.join(dir, 'out.wav')), mimeType: 'audio/wav' };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 

@@ -15,13 +15,16 @@ import {
   Plus,
   RotateCcw,
   Sparkles,
+  Square,
   Trash2,
   User,
   Video,
   Volume2,
   Wand2
 } from 'lucide-react';
-import { useStudio } from '../studio';
+import { useStudio, type VoiceState } from '../studio';
+import { SyncedVideo } from './SyncedVideo';
+import { parseDialogueLines } from '../../../src/core/voicePlan';
 import { api } from '../api';
 import { CAMERA_ANGLES } from '../../../src/core/constants';
 import type { CameraAngle, ModelInfo, SceneItem } from '../../../src/core/types';
@@ -58,7 +61,7 @@ export function SceneList() {
             </button>
             <button
               onClick={() => s.renderAll({ onlyMissing: false, thenMerge: false })}
-              disabled={s.isBatch || p.scenes.length === 0}
+              disabled={s.isBatch || !!s.mergeJob || p.scenes.length === 0}
               className="hidden sm:flex items-center gap-1.5 bg-[#232330] hover:bg-[#2c2c3e] border border-slate-700 text-xs text-slate-200 px-3 py-1.5 rounded-xl disabled:opacity-40"
             >
               <RotateCcw size={13} className="text-amber-400" /> Render lại tất cả
@@ -119,12 +122,68 @@ export function SceneList() {
   );
 }
 
+const VOICE_BADGE: Record<VoiceState, [string, string]> = {
+  none: ['', ''],
+  'not-needed': ['Model video tự tạo tiếng — không cần lồng tiếng', 'text-slate-500'],
+  missing: ['Chưa lồng tiếng', 'text-slate-400'],
+  stale: ['Giọng đã cũ (thoại/giọng thay đổi)', 'text-amber-400'],
+  ok: ['Đã lồng tiếng', 'text-emerald-400']
+};
+
+/** Who speaks each line with which voice + (re)generate the scene's voice track. */
+function VoiceRow({ scene, state, voicing }: { scene: SceneItem; state: VoiceState; voicing: boolean }) {
+  const s = useStudio();
+  const p = s.project!;
+  if (state === 'none' || p.settings.voiceMode === 'off') return null;
+  const speakers = [...new Set(parseDialogueLines(scene.dialogue).map(l => l.speaker ?? ''))];
+  const voiceOf = (name: string) => {
+    const c = name ? p.characters.find(x => x.name.toLowerCase() === name.toLowerCase()) : undefined;
+    const id = c ? s.castVoices[c.id] : undefined;
+    return id ? s.voices.find(v => v.id === id)?.label ?? id : null;
+  };
+  const [label, color] = VOICE_BADGE[state];
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2 text-[10px]">
+      <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0">
+        <span className={`flex items-center gap-1 font-semibold ${color}`}>
+          <Volume2 size={11} /> {label}
+          {scene.voice && state !== 'not-needed' && <span className="font-mono text-slate-500">· {scene.voice.durationSeconds}s</span>}
+        </span>
+        {state !== 'not-needed' &&
+          speakers.map(n => {
+            const v = voiceOf(n);
+            return (
+              <span key={n || '-'} className="text-slate-500 truncate max-w-[180px]">
+                {n || 'Lời dẫn'}
+                {v ? ` → ${v}` : ''}
+              </span>
+            );
+          })}
+      </span>
+      {state !== 'not-needed' && (
+        <button
+          onClick={() => s.voiceScene(scene.id)}
+          disabled={voicing || !s.ttsModel?.available}
+          title={!s.ttsModel?.available ? `Model TTS chưa sẵn sàng: ${s.ttsModel?.unavailableReason ?? ''}` : undefined}
+          className="flex items-center gap-1 px-2 py-0.5 rounded-md border border-cyan-500/40 text-cyan-300 bg-cyan-500/10 hover:bg-cyan-500/20 disabled:opacity-40"
+        >
+          {voicing ? <Loader2 size={10} className="animate-spin" /> : <Volume2 size={10} />}
+          {state === 'missing' ? 'Lồng tiếng' : 'Tạo lại giọng'}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function SceneCard({ scene, index, collapsed, onCollapse }: { scene: SceneItem; index: number; collapsed: boolean; onCollapse: (c: boolean) => void }) {
   const s = useStudio();
   const p = s.project!;
   const [showDetails, setShowDetails] = useState(false);
   const [finalPrompt, setFinalPrompt] = useState<string | null>(null);
   const generating = scene.status === 'generating';
+  const job = s.jobForScene(scene.id) ?? (generating ? s.batchJob : undefined);
+  const vstate = s.voiceState(scene);
+  const voicing = s.jobs.some(j => j.kind === 'voice' && j.sceneId === scene.id);
   const bound = p.characters.filter(c => scene.selectedCharacterIds.includes(c.id));
   const snapped = snapDuration(s.videoModel, scene.durationSeconds);
   const refLimit = s.videoModel?.maxReferenceImages ?? 0;
@@ -135,7 +194,18 @@ function SceneCard({ scene, index, collapsed, onCollapse }: { scene: SceneItem; 
   const previewPrompt = async () => {
     try {
       const r = await api.scenePrompt({ scene, characters: p.characters, settings: { ...p.settings, videoModel: s.effective('video') } });
-      setFinalPrompt(r.prompt + (r.negativePrompt ? `\n\nNEGATIVE: ${r.negativePrompt}` : ''));
+      const refs: Record<string, string> = {
+        none: 'không gửi ảnh nhân vật',
+        direct: 'gửi trực tiếp ảnh nhân vật',
+        sheet: 'ghép nhiều chân dung thành 1 ảnh tham chiếu',
+        keyframe: 'dựng khung hình đầu bằng model ảnh rồi image-to-video'
+      };
+      setFinalPrompt(
+        r.prompt +
+          (r.negativePrompt ? `\n\nNEGATIVE: ${r.negativePrompt}` : '') +
+          `\n\nẢNH THAM CHIẾU: ${refs[r.references] ?? r.references}` +
+          (r.notes.length ? `\n⚠ ${r.notes.join('\n⚠ ')}` : '')
+      );
     } catch (e) {
       setFinalPrompt(`Lỗi: ${(e as Error).message}`);
     }
@@ -144,7 +214,7 @@ function SceneCard({ scene, index, collapsed, onCollapse }: { scene: SceneItem; 
   const RenderButton = ({ small }: { small?: boolean }) => (
     <button
       onClick={() => s.renderScene(scene.id)}
-      disabled={generating}
+      disabled={generating || s.isBatch}
       className={
         small
           ? 'flex items-center gap-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-xs px-2.5 py-1 rounded-lg border border-amber-500/30 font-semibold'
@@ -236,7 +306,13 @@ function SceneCard({ scene, index, collapsed, onCollapse }: { scene: SceneItem; 
                     <MessageSquare size={13} /> Lời thoại trong cảnh
                   </label>
                   <span className="text-[10px] text-amber-400/90 font-mono">
-                    {s.videoModel?.supportsAudio === false ? '🔇 model không có tiếng → chỉ dùng làm phụ đề' : 'Nguyên văn kịch bản · lip-sync'}
+                    {s.videoModel?.supportsAudio === false
+                      ? p.settings.voiceMode === 'off'
+                        ? '🔇 model không có tiếng · lồng tiếng đang tắt'
+                        : '🔇 model không có tiếng → lồng tiếng TTS'
+                      : p.settings.voiceMode === 'always'
+                        ? 'lip-sync + lồng tiếng TTS'
+                        : 'Nguyên văn kịch bản · lip-sync'}
                   </span>
                 </div>
                 <textarea
@@ -246,6 +322,7 @@ function SceneCard({ scene, index, collapsed, onCollapse }: { scene: SceneItem; 
                   className="w-full bg-[#0d0d12] border border-[#2e2e42] focus:border-amber-400 rounded-lg p-2 text-xs text-amber-200 placeholder-slate-600 outline-none resize-y"
                   placeholder={`Mai: "Xin chào!"\nTom: "Hello Grandma!"`}
                 />
+                <VoiceRow scene={scene} state={vstate} voicing={voicing} />
               </div>
 
               <div>
@@ -255,7 +332,11 @@ function SceneCard({ scene, index, collapsed, onCollapse }: { scene: SceneItem; 
                   </span>
                   <span className="text-[10px] text-slate-500">
                     {scene.characterNames.length > 0 && `Kịch bản: ${scene.characterNames.join(', ')} · `}
-                    model nhận tối đa {refLimit} ảnh tham chiếu
+                    {refLimit === 0
+                      ? 'model không nhận ảnh tham chiếu'
+                      : s.videoModel?.referenceMode === 'first-frame'
+                        ? 'ảnh → khung hình đầu (keyframe)'
+                        : `model nhận tối đa ${refLimit} ảnh${bound.length > refLimit ? ' → sẽ ghép ảnh' : ''}`}
                   </span>
                 </div>
                 {p.characters.length ? (
@@ -360,7 +441,23 @@ function SceneCard({ scene, index, collapsed, onCollapse }: { scene: SceneItem; 
             <div className="lg:col-span-5 flex flex-col justify-between bg-[#121219] rounded-xl border border-[#262636] p-3">
               {scene.video && !generating ? (
                 <div className="flex flex-col gap-2">
-                  <video key={scene.video.file} src={scene.video.url} controls playsInline className="w-full aspect-video rounded-lg bg-black border border-white/5" />
+                  <SyncedVideo
+                    key={scene.video.file}
+                    src={scene.video.url}
+                    voice={vstate === 'ok' || vstate === 'stale' ? scene.voice : undefined}
+                    controls
+                    className="w-full aspect-video rounded-lg bg-black border border-white/5"
+                  />
+                  {scene.lastRender?.keyframe && (
+                    <a href={scene.lastRender.keyframe.url} target="_blank" rel="noreferrer" className="flex items-center gap-2 text-[10px] text-slate-400 hover:text-slate-200">
+                      <img src={scene.lastRender.keyframe.url} className="w-12 h-7 object-cover rounded border border-white/10" /> Khung hình đầu (keyframe) dựng từ ảnh nhân vật
+                    </a>
+                  )}
+                  {scene.lastRender?.notes?.map(n => (
+                    <div key={n} className="text-[10px] text-amber-300/90 flex items-start gap-1">
+                      <AlertCircle size={11} className="shrink-0 mt-0.5" /> {n}
+                    </div>
+                  ))}
                   <div className="flex items-center justify-between">
                     <span className="text-[11px] text-emerald-400 font-semibold flex items-center gap-1.5">
                       <CheckCircle2 size={14} /> {scene.lastRender ? `${scene.lastRender.model} · ${scene.lastRender.durationSeconds}s` : 'Hoàn tất'}
@@ -371,7 +468,8 @@ function SceneCard({ scene, index, collapsed, onCollapse }: { scene: SceneItem; 
                       </a>
                       <button
                         onClick={() => s.renderScene(scene.id)}
-                        className="flex items-center gap-1 text-[11px] bg-amber-500/20 text-amber-300 px-2.5 py-1 rounded-lg border border-amber-500/40"
+                        disabled={s.isBatch}
+                        className="flex items-center gap-1 text-[11px] bg-amber-500/20 text-amber-300 px-2.5 py-1 rounded-lg border border-amber-500/40 disabled:opacity-40"
                       >
                         <RotateCcw size={13} /> Tạo lại
                       </button>
@@ -387,6 +485,15 @@ function SceneCard({ scene, index, collapsed, onCollapse }: { scene: SceneItem; 
                       <p className="text-[11px] text-slate-400">
                         {s.videoModel?.label} ({p.settings.resolution}, {snapped}s)
                       </p>
+                      {job && <p className="text-[10px] text-slate-500 max-w-full truncate">{job.progress}</p>}
+                      {job && (
+                        <button
+                          onClick={() => s.cancelJob(job.id)}
+                          className="flex items-center gap-1.5 text-[11px] bg-red-500/10 text-red-300 px-3 py-1 rounded-lg border border-red-500/40 hover:bg-red-500/20"
+                        >
+                          <Square size={10} className="fill-current" /> {job.kind === 'render-all' ? 'Dừng cả loạt' : 'Hủy render'}
+                        </button>
+                      )}
                     </>
                   ) : (
                     <>

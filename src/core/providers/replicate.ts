@@ -2,7 +2,21 @@ import type { ModelConfig, ProviderConfig } from '../config';
 import type { GeneratedMedia } from '../media';
 import { extractUrl } from '../json';
 import { renderTemplate } from '../template';
-import { httpJson, keyReason, pickEndpoint, sleep, templateVars, type ImageRequest, type Provider, type TextRequest, type VideoRequest } from './base';
+import { log } from '../log';
+import {
+  CanceledError,
+  httpJson,
+  isCanceled,
+  keyReason,
+  pickEndpoint,
+  sleep,
+  templateVars,
+  type ImageRequest,
+  type MediaRef,
+  type Provider,
+  type TextRequest,
+  type VideoRequest
+} from './base';
 
 /** Replicate predictions API. `model` is "owner/name" or "owner/name:version". */
 export class ReplicateProvider implements Provider {
@@ -27,13 +41,47 @@ export class ReplicateProvider implements Provider {
       signal
     });
     const deadline = Date.now() + 30 * 60_000;
-    while (!['succeeded', 'failed', 'canceled'].includes(pred.status)) {
-      if (Date.now() > deadline) throw new Error('Replicate quá thời gian chờ');
-      await sleep(4000, signal);
-      pred = await httpJson(pred.urls.get, { headers: { Authorization: headers.Authorization } });
+    try {
+      while (!['succeeded', 'failed', 'canceled'].includes(pred.status)) {
+        if (Date.now() > deadline) throw new Error('Replicate quá thời gian chờ');
+        await sleep(4000, signal);
+        pred = await httpJson(pred.urls.get, { headers: { Authorization: headers.Authorization }, signal });
+      }
+    } catch (e) {
+      if (isCanceled(e, signal)) {
+        if (pred?.urls?.cancel)
+          await fetch(pred.urls.cancel, { method: 'POST', headers: { Authorization: headers.Authorization }, signal: AbortSignal.timeout(15_000) }).catch(() => {});
+        throw new CanceledError();
+      }
+      throw e;
     }
     if (pred.status !== 'succeeded') throw new Error(`Replicate: ${pred.error ?? pred.status}`);
     return pred;
+  }
+
+  /** Large reference images go through the Files API (data URIs are only recommended under ~256 KB). */
+  private async hostRefs<T extends { referenceImages?: MediaRef[] }>(req: T): Promise<T> {
+    if (!req.referenceImages?.length) return req;
+    const refs = await Promise.all(
+      req.referenceImages.map(async r => {
+        if (r.url || r.buffer.length < 200_000) return r;
+        try {
+          const form = new FormData();
+          form.set('content', new Blob([new Uint8Array(r.buffer)], { type: r.mimeType }), `ref.${r.mimeType.split('/')[1] || 'png'}`);
+          const f = await httpJson('https://api.replicate.com/v1/files', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${this.config.apiKey}` },
+            body: form,
+            timeoutMs: 120_000
+          });
+          return f?.urls?.get ? { ...r, url: String(f.urls.get) } : r;
+        } catch (e) {
+          log.warn('Không upload được ảnh lên Replicate Files API, gửi kèm base64:', (e as Error).message);
+          return r;
+        }
+      })
+    );
+    return { ...req, referenceImages: refs };
   }
 
   async text(model: ModelConfig, req: TextRequest): Promise<string> {
@@ -46,6 +94,7 @@ export class ReplicateProvider implements Provider {
   }
 
   async image(model: ModelConfig, req: ImageRequest): Promise<GeneratedMedia> {
+    req = await this.hostRefs(req);
     const { endpoint, input } = pickEndpoint(model, req);
     const pred = await this.predict(endpoint, renderTemplate(input ?? { prompt: '{{prompt}}' }, templateVars(req)));
     const url = extractUrl(pred, model.output ?? 'output');
@@ -54,6 +103,7 @@ export class ReplicateProvider implements Provider {
   }
 
   async video(model: ModelConfig, req: VideoRequest): Promise<GeneratedMedia> {
+    req = await this.hostRefs(req);
     const { endpoint, input } = pickEndpoint(model, req);
     const pred = await this.predict(endpoint, renderTemplate(input ?? { prompt: '{{prompt}}' }, templateVars(req)), req.signal);
     const url = extractUrl(pred, model.output ?? 'output');

@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { BookOpen, Film, FolderOpen, Loader2, Plus, Sparkles, Trash2, Upload, UserPlus, X } from 'lucide-react';
+import { BookOpen, Eraser, Film, FolderOpen, Loader2, Plus, Sparkles, Trash2, Upload, UserPlus, X } from 'lucide-react';
 import { useStudio } from '../studio';
 import { api } from '../api';
 import { SAMPLE_SCRIPT } from '../../../src/core/constants';
@@ -238,7 +238,56 @@ export function ProjectsModal({ onClose }: { onClose: () => void }) {
           ))}
         </div>
       )}
+      <MediaCleanup />
     </Modal>
+  );
+}
+
+/** Find (dry run) then delete generated files no project references anymore. */
+function MediaCleanup() {
+  const s = useStudio();
+  const [scan, setScan] = useState<{ files: number; bytes: number } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const mb = (b: number) => `${(b / 1024 / 1024).toFixed(1)} MB`;
+  const run = async (dryRun: boolean) => {
+    setBusy(true);
+    try {
+      const r = await api.mediaGc(dryRun);
+      if (dryRun) setScan(r);
+      else {
+        setScan(null);
+        s.flash('info', `🧹 Đã xóa ${r.files} file media thừa (${mb(r.bytes)})`);
+      }
+    } catch (e) {
+      s.flash('error', (e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="mt-4 pt-3 border-t border-[#2a2a3a] text-xs">
+      {!scan ? (
+        <button onClick={() => run(true)} disabled={busy} className="flex items-center gap-1.5 text-slate-400 hover:text-white disabled:opacity-50">
+          {busy ? <Loader2 size={13} className="animate-spin" /> : <Eraser size={13} />} Dọn file media thừa (render cũ, bản nghe thử…)
+        </button>
+      ) : scan.files === 0 ? (
+        <p className="text-slate-400">Không có file thừa nào (file mới hơn 1 giờ được giữ lại).</p>
+      ) : (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-slate-300">
+            {scan.files} file không còn dự án nào dùng · <b className="text-amber-300">{mb(scan.bytes)}</b>
+          </span>
+          <span className="flex gap-2">
+            <button onClick={() => setScan(null)} className="px-2.5 py-1 rounded-lg border border-slate-700 text-slate-300">
+              Thôi
+            </button>
+            <button onClick={() => run(false)} disabled={busy} className="px-2.5 py-1 rounded-lg bg-red-500/80 text-white font-semibold disabled:opacity-50">
+              {busy ? 'Đang xóa...' : 'Xóa vĩnh viễn'}
+            </button>
+          </span>
+        </div>
+      )}
+    </div>
   );
 }
 

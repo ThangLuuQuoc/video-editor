@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { CheckCircle2, ChevronDown, ChevronUp, Download, Film, Layers, Loader2, MessageSquare, Pause, Play, SkipBack, SkipForward, Video } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, ChevronDown, ChevronUp, Download, Film, Layers, Loader2, MessageSquare, Pause, Play, SkipBack, SkipForward, Square, Video } from 'lucide-react';
 import { useStudio } from '../studio';
+import { SyncedVideo } from './SyncedVideo';
 
 /** Sequential playlist player + merged-file card. */
 export function MoviePanel() {
@@ -74,25 +75,48 @@ export function MoviePanel() {
                   className="accent-amber-500 w-3.5 h-3.5"
                 />
                 In phụ đề vào video
+                {!s.subtitlesOk && (
+                  <span title="ffmpeg trên máy thiếu libass (filter subtitles) — không in được chữ vào video, chỉ có file .vtt">
+                    <AlertTriangle size={13} className="text-red-400" />
+                  </span>
+                )}
               </label>
             </>
           )}
-          <button
-            onClick={() => s.merge()}
-            disabled={s.isMerging || list.length === 0}
-            className="flex items-center gap-1.5 bg-[#252538] hover:bg-[#2f2f46] text-amber-300 border border-amber-500/40 text-xs font-semibold px-2.5 py-1.5 rounded-xl disabled:opacity-40"
-          >
-            {s.isMerging ? <Loader2 size={13} className="animate-spin" /> : <Layers size={13} />} Ghép ngay
-          </button>
+          {s.mergeJob ? (
+            <button
+              onClick={() => s.cancelJob(s.mergeJob!.id)}
+              className="flex items-center gap-1.5 bg-red-500/10 text-red-300 border border-red-500/40 text-xs font-semibold px-2.5 py-1.5 rounded-xl"
+            >
+              <Square size={11} className="fill-current" /> Dừng ghép
+            </button>
+          ) : (
+            <button
+              onClick={() => s.merge()}
+              disabled={s.isMerging || s.isBatch || list.length === 0}
+              className="flex items-center gap-1.5 bg-[#252538] hover:bg-[#2f2f46] text-amber-300 border border-amber-500/40 text-xs font-semibold px-2.5 py-1.5 rounded-xl disabled:opacity-40"
+            >
+              {s.isMerging ? <Loader2 size={13} className="animate-spin" /> : <Layers size={13} />} Ghép ngay
+            </button>
+          )}
           <button onClick={() => setCollapsed(!collapsed)} className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-[#252536]">
             {collapsed ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
           </button>
         </div>
       </div>
 
-      {s.isMerging && s.progress && (
+      {s.mergeJob && (
         <div className="px-4 py-2 bg-amber-500/10 border-y border-amber-500/30 text-amber-300 text-xs flex items-center gap-2">
-          <Loader2 size={13} className="animate-spin" /> {s.progress}
+          <Loader2 size={13} className="animate-spin" /> {s.mergeJob.progress}
+        </div>
+      )}
+      {!collapsed && p.mergeWarnings && p.mergeWarnings.length > 0 && (
+        <div className="px-4 py-2 bg-red-500/5 border-y border-red-500/20 text-red-300 text-[11px] space-y-0.5">
+          {p.mergeWarnings.map(w => (
+            <div key={w} className="flex items-start gap-1.5">
+              <AlertTriangle size={12} className="shrink-0 mt-0.5" /> {w}
+            </div>
+          ))}
         </div>
       )}
 
@@ -101,11 +125,11 @@ export function MoviePanel() {
           <div className="lg:col-span-7 xl:col-span-8 bg-black rounded-2xl overflow-hidden border border-[#2d2d40] relative flex items-center justify-center h-[240px] xl:h-[300px]">
             {current ? (
               <>
-                <video
+                <SyncedVideo
                   ref={videoRef}
                   key={current.video!.file}
                   src={current.video!.url}
-                  playsInline
+                  voice={s.voiceState(current) === 'not-needed' ? undefined : current.voice}
                   className="w-full h-full object-contain"
                   onEnded={onEnded}
                   onPlay={() => setPlaying(true)}
@@ -162,7 +186,7 @@ export function MoviePanel() {
                 <div className="border border-dashed border-[#2d2d42] rounded-xl p-3 text-center bg-[#12121a]">
                   <Video size={20} className="mx-auto text-slate-600 mb-1" />
                   <div className="text-xs font-semibold text-slate-400">Chưa xuất video ghép</div>
-                  <div className="text-[10px] text-slate-500 mt-0.5">Ghép bằng ffmpeg trên server: MP4 H.264, phụ đề canh thời gian theo từng câu thoại</div>
+                  <div className="text-[10px] text-slate-500 mt-0.5">Ghép bằng ffmpeg trên server: MP4 H.264, lồng tiếng TTS khi model không có tiếng, phụ đề khớp từng câu thoại</div>
                 </div>
               )}
             </div>
@@ -185,7 +209,7 @@ export function MoviePanel() {
               ) : (
                 <button
                   onClick={() => s.merge()}
-                  disabled={s.isMerging || list.length === 0}
+                  disabled={s.isMerging || s.isBatch || list.length === 0}
                   className="w-full flex items-center justify-center gap-1.5 py-2 rounded-xl bg-[#222234] border border-amber-500/30 text-amber-300 text-xs font-semibold disabled:opacity-40"
                 >
                   <Layers size={13} /> Ghép tất cả cảnh thành 1 file MP4

@@ -11,7 +11,11 @@ const EXT: Record<string, string> = {
   'image/jpeg': 'jpg',
   'image/webp': 'webp',
   'image/svg+xml': 'svg',
-  'text/vtt': 'vtt'
+  'text/vtt': 'vtt',
+  'audio/mp4': 'm4a',
+  'audio/mpeg': 'mp3',
+  'audio/wav': 'wav',
+  'audio/aiff': 'aiff'
 };
 
 export const MIME_BY_EXT: Record<string, string> = Object.fromEntries(
@@ -87,5 +91,25 @@ export class MediaStore {
 
   exists(asset?: MediaAsset): boolean {
     return !!asset && fs.existsSync(this.pathOf(asset.file));
+  }
+
+  /**
+   * Delete media files no project references any more. Files younger than `minAgeMs` are kept
+   * (they may belong to a render that is still running and not saved yet).
+   */
+  gc(referenced: Set<string>, opts: { dryRun?: boolean; minAgeMs?: number } = {}): { files: string[]; bytes: number } {
+    const minAge = opts.minAgeMs ?? 60 * 60_000;
+    const files: string[] = [];
+    let bytes = 0;
+    for (const f of fs.readdirSync(this.dir)) {
+      if (referenced.has(f)) continue;
+      const full = path.join(this.dir, f);
+      const st = fs.statSync(full);
+      if (!st.isFile() || Date.now() - st.mtimeMs < minAge) continue;
+      files.push(f);
+      bytes += st.size;
+      if (!opts.dryRun) fs.rmSync(full, { force: true });
+    }
+    return { files, bytes };
   }
 }

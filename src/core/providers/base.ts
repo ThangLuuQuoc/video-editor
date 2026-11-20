@@ -1,6 +1,6 @@
 import type { ModelConfig, ProviderConfig } from '../config';
 import type { GeneratedMedia } from '../media';
-import type { AspectRatio, VideoResolution } from '../types';
+import type { AspectRatio, VideoResolution, VoiceInfo } from '../types';
 
 export interface TextRequest {
   prompt: string;
@@ -12,6 +12,18 @@ export interface MediaRef {
   dataUrl: string;
   mimeType: string;
   buffer: Buffer;
+  /** Public URL after uploading to the provider's storage (fal CDN, Replicate files…). */
+  url?: string;
+}
+
+export interface SpeechRequest {
+  text: string;
+  voice: string;
+  /** Acting directions (models that support them, e.g. gpt-4o-mini-tts). */
+  instructions?: string;
+  /** 1 = normal. */
+  speed?: number;
+  signal?: AbortSignal;
 }
 
 export interface ImageRequest {
@@ -19,6 +31,7 @@ export interface ImageRequest {
   negativePrompt?: string;
   aspectRatio: AspectRatio;
   referenceImages?: MediaRef[];
+  signal?: AbortSignal;
 }
 
 export interface VideoRequest {
@@ -42,6 +55,24 @@ export interface Provider {
   text?(model: ModelConfig, req: TextRequest): Promise<string>;
   image?(model: ModelConfig, req: ImageRequest): Promise<GeneratedMedia>;
   video?(model: ModelConfig, req: VideoRequest): Promise<GeneratedMedia>;
+  speech?(model: ModelConfig, req: SpeechRequest): Promise<GeneratedMedia>;
+  /** Voices discovered at runtime (e.g. OS voices). Models may also list voices in config. */
+  listVoices?(model: ModelConfig): Promise<VoiceInfo[]>;
+}
+
+export class CanceledError extends Error {
+  constructor() {
+    super('Đã hủy');
+    this.name = 'CanceledError';
+  }
+}
+
+export function isCanceled(err: unknown, signal?: AbortSignal): boolean {
+  return !!signal?.aborted || (err as Error)?.name === 'CanceledError' || (err as Error)?.name === 'AbortError';
+}
+
+export function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw new CanceledError();
 }
 
 export function keyReason(cfg: ProviderConfig, envHint: string): string | undefined {
@@ -51,8 +82,15 @@ export function keyReason(cfg: ProviderConfig, envHint: string): string | undefi
 
 export async function httpJson(url: string, init: RequestInit & { timeoutMs?: number } = {}): Promise<any> {
   const { timeoutMs = 120_000, ...rest } = init;
-  const signal = rest.signal ?? AbortSignal.timeout(timeoutMs);
-  const res = await fetch(url, { ...rest, signal });
+  const user = rest.signal ?? undefined;
+  const signal = user ? AbortSignal.any([user, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
+  let res: Response;
+  try {
+    res = await fetch(url, { ...rest, signal });
+  } catch (e) {
+    if (user?.aborted) throw new CanceledError();
+    throw e;
+  }
   const text = await res.text();
   let body: any;
   try {
@@ -69,11 +107,16 @@ export async function httpJson(url: string, init: RequestInit & { timeoutMs?: nu
 
 export const sleep = (ms: number, signal?: AbortSignal) =>
   new Promise<void>((resolve, reject) => {
-    const t = setTimeout(resolve, ms);
-    signal?.addEventListener('abort', () => {
+    if (signal?.aborted) return reject(new CanceledError());
+    const onAbort = () => {
       clearTimeout(t);
-      reject(new Error('Đã hủy'));
-    });
+      reject(new CanceledError());
+    };
+    const t = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 
 /** Variables available to request templates. */
@@ -87,8 +130,8 @@ export function templateVars(req: VideoRequest | ImageRequest, extra: Record<str
     duration: v.durationSeconds,
     resolution: v.resolution,
     generate_audio: v.generateAudio,
-    image: refs[0]?.dataUrl,
-    images: refs.length ? refs.map(r => r.dataUrl) : undefined,
+    image: refs[0] ? refs[0].url ?? refs[0].dataUrl : undefined,
+    images: refs.length ? refs.map(r => r.url ?? r.dataUrl) : undefined,
     ...extra
   };
 }
